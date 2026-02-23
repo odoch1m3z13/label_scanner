@@ -475,8 +475,8 @@ $('runBtn').addEventListener('click', async () => {
   try {
     const health = await fetch('/health');
     const hj = await health.json();
-    if (!hj.ocr_ready) {
-      setStatus('Server is still loading the OCR model — wait a moment and retry.', 'error');
+    if (!hj.workers_ready) {
+      setStatus('Workers are still warming up — wait a moment and retry.', 'error');
       $('runBtn').disabled = false;
       return;
     }
@@ -493,18 +493,18 @@ $('runBtn').addEventListener('click', async () => {
   form.append('ref_image',  refFile);
   form.append('user_image', userFile);
 
-  // Fake staged progress while waiting for the (potentially slow) OCR
+  // Fake staged progress while waiting for parallel OCR in the workers
   let fakeProgress = 0.05;
   const fakeTimer = setInterval(() => {
-    fakeProgress = Math.min(fakeProgress + 0.015, 0.88);
+    fakeProgress = Math.min(fakeProgress + 0.018, 0.88);
     setStatus(
-      fakeProgress < 0.30 ? 'Python: applying CLAHE normalisation + unsharp masking…' :
-      fakeProgress < 0.55 ? 'EasyOCR: CRAFT text detection in progress…' :
-                            'EasyOCR: CRNN text recognition…',
+      fakeProgress < 0.25 ? 'Workers: CLAHE normalisation + unsharp masking…' :
+      fakeProgress < 0.55 ? 'PaddleOCR: DB text detection running in parallel…' :
+                            'PaddleOCR: CRNN text recognition…',
       'loading',
       fakeProgress,
     );
-  }, 600);
+  }, 500);
 
   let data;
   try {
@@ -551,7 +551,7 @@ $('runBtn').addEventListener('click', async () => {
     } else if (d.type === 'modified') {
       // Red on ref  = shows where the original word was before it changed
       // Red on user = shows the new (different) word in the scan
-      drawPolygon($('refCanvas'),  d.ref.polygon,  '#ef4444', refScale);
+      drawPolygon($('refCanvas'),  d.ref.polygon,  '#22c55e', refScale);
       drawPolygon($('userCanvas'), d.user.polygon, '#ef4444', userScale);
     }
   }
@@ -594,7 +594,7 @@ $('runBtn').addEventListener('click', async () => {
   $('resultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   setStatus(
-    `Done  ·  Original: ${data.ref_word_count} words  ·  Scanned: ${data.user_word_count} words  ·  ` +
+    `Done in ${data.ocr_time_s}s  ·  Original: ${data.ref_word_count} words  ·  Scanned: ${data.user_word_count} words  ·  ` +
     `${data.modified_count} changed  ·  ${data.removed_count} removed  ·  ${data.added_count} added`,
     'success',
     1.0,
