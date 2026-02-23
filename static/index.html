@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Label Diff Scanner</title>
+  <style>
+    /* ─── Reset & Base ────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0c0f1a;
+      --surface:    #131929;
+      --surface2:   #1a2236;
+      --border:     #1e2d45;
+      --border2:    #263349;
+      --text:       #e2e8f0;
+      --muted:      #64748b;
+      --accent:     #6366f1;
+      --accent-h:   #818cf8;
+      --green:      #22c55e;
+      --red:        #ef4444;
+      --yellow:     #facc15;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    /* ─── Layout ──────────────────────────────────────────────────────────────── */
+    .wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 18px;
+    }
+
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+
+    /* ─── Header ──────────────────────────────────────────────────────────────── */
+    header { text-align: center; padding: 12px 0 4px; }
+    header h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: #fff; }
+    header p  { color: var(--muted); margin-top: 6px; font-size: 13px; }
+
+    /* ─── Status bar ──────────────────────────────────────────────────────────── */
+    #statusBar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 10px;
+      padding: 14px 18px;
+    }
+    #statusBar.show { display: flex; }
+
+    .spinner {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 2.5px solid var(--border2);
+      border-top-color: var(--accent-h);
+      animation: spin .8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #statusText { font-size: 13px; font-weight: 500; flex: 1; }
+    #statusText.error   { color: #f87171; }
+    #statusText.success { color: #4ade80; }
+    #statusText.loading { color: var(--accent-h); }
+
+    .progress-track {
+      height: 3px; background: var(--border2); border-radius: 2px; margin-top: 8px;
+    }
+    .progress-bar {
+      height: 100%; border-radius: 2px; background: var(--accent);
+      transition: width .3s ease;
+    }
+
+    /* ─── Upload zones ────────────────────────────────────────────────────────── */
+    .upload-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: block; }
+
+    .drop-zone {
+      position: relative;
+      border: 1.5px dashed var(--border2);
+      border-radius: 10px;
+      background: var(--surface2);
+      min-height: 96px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      overflow: hidden;
+      padding: 16px;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--accent);
+      background: #1a2040;
+    }
+    .drop-zone input[type=file] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-icon { font-size: 22px; line-height: 1; pointer-events: none; }
+    .drop-hint { font-size: 12px; color: var(--muted); pointer-events: none; }
+    .drop-name { font-size: 12px; color: var(--accent-h); font-weight: 500; pointer-events: none; }
+    .drop-thumb {
+      max-height: 90px; max-width: 100%; border-radius: 6px;
+      object-fit: contain; pointer-events: none;
+      display: none;
+    }
+
+    /* ─── Scan button ─────────────────────────────────────────────────────────── */
+    #runBtn {
+      width: 100%;
+      padding: 13px;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+      margin-top: 4px;
+    }
+    #runBtn:hover:not(:disabled) { background: var(--accent-h); }
+    #runBtn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ─── OCR preview ─────────────────────────────────────────────────────────── */
+    #previewSection { display: none; }
+    #previewSection.show { display: block; }
+
+    .preview-img {
+      width: 100%; border-radius: 8px; border: 1px solid var(--border2);
+      display: block;
+    }
+    .preview-label {
+      font-size: 11px; color: var(--muted); margin-bottom: 6px;
+    }
+    .word-count {
+      margin-top: 6px; font-size: 11px; color: var(--muted);
+    }
+    .word-count span { color: var(--accent-h); font-weight: 700; }
+
+    /* ─── Results ─────────────────────────────────────────────────────────────── */
+    #resultsSection { display: none; }
+    #resultsSection.show { display: block; }
+
+    /* Summary banner */
+    #summaryBanner {
+      border-radius: 10px;
+      padding: 14px 20px;
+      text-align: center;
+      font-weight: 700;
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+    #summaryBanner.match {
+      background: #14532d33;
+      border: 1px solid #166534;
+      color: #4ade80;
+    }
+    #summaryBanner.diff {
+      background: #7f1d1d33;
+      border: 1px solid #991b1b;
+      color: #f87171;
+    }
+
+    /* Diff canvases */
+    .diff-canvas-wrap { display: flex; flex-direction: column; }
+    .diff-legend {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px; font-size: 12px; font-weight: 600;
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    canvas.diff-canvas {
+      width: 100%; height: auto; border-radius: 8px;
+      border: 1px solid var(--border2); display: block;
+    }
+
+    /* Text diff */
+    .text-diff-box {
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      padding: 14px 16px;
+      max-height: 260px;
+      overflow-y: auto;
+      font-family: 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
+      line-height: 2;
+      word-break: break-word;
+    }
+    .text-diff-box em { color: var(--muted); font-style: italic; }
+
+    .chip-match   { color: var(--muted); }
+    .chip-removed {
+      background: #14532d55; color: #4ade80; border-radius: 4px;
+      padding: 1px 6px; text-decoration: line-through; display: inline-block; margin: 1px 2px;
+    }
+    .chip-added {
+      background: #7f1d1d55; color: #f87171; border-radius: 4px;
+      padding: 1px 6px; display: inline-block; margin: 1px 2px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--surface2); }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <header>
+    <h1>Label Diff Scanner</h1>
+    <p>Python / EasyOCR / OpenCV — upload two label images to detect text differences</p>
+  </header>
+
+  <!-- Status -->
+  <div id="statusBar">
+    <div id="spinnerEl" class="spinner" style="display:none"></div>
+    <div style="flex:1">
+      <div id="statusText"></div>
+      <div class="progress-track" id="progressTrack" style="display:none">
+        <div class="progress-bar" id="progressBar" style="width:0%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload card -->
+  <div class="card">
+    <div class="card-title">Upload Labels</div>
+    <div class="grid2" style="margin-bottom:16px">
+
+      <!-- Reference -->
+      <div>
+        <span class="upload-label">1 — Original Label</span>
+        <div class="drop-zone" id="refZone">
+          <input type="file" id="refInput" accept="image/*" />
+          <div class="drop-icon">🏷️</div>
+          <div class="drop-hint" id="refHint">Click or drag image here</div>
+          <div class="drop-name" id="refName" style="display:none"></div>
+          <img class="drop-thumb" id="refThumb" alt="" />
+        </div>
+      </div>
+
+      <!-- User / Scanned -->
+      <div>
+        <span class="upload-label">2 — Scanned Label</span>
+        <div class="drop-zone" id="userZone">
+          <input type="file" id="userInput" accept="image/*" />
+          <div class="drop-icon">📷</div>
+          <div class="drop-hint" id="userHint">Click or drag image here</div>
+          <div class="drop-name" id="userName" style="display:none"></div>
+          <img class="drop-thumb" id="userThumb" alt="" />
+        </div>
+      </div>
+    </div>
+
+    <button id="runBtn" disabled>Scan &amp; Compare Labels</button>
+  </div>
+
+  <!-- OCR preview (what the backend processed) -->
+  <div id="previewSection">
+    <div class="card">
+      <div class="card-title">OpenCV Preprocessing Preview — what EasyOCR received</div>
+      <div class="grid2">
+        <div>
+          <div class="preview-label">Original — CLAHE + USM sharpened</div>
+          <img id="refPreview" class="preview-img" alt="" />
+          <div class="word-count">Words found: <span id="refWordCount">–</span></div>
+        </div>
+        <div>
+          <div class="preview-label">Scanned — CLAHE + USM sharpened</div>
+          <img id="userPreview" class="preview-img" alt="" />
+          <div class="word-count">Words found: <span id="userWordCount">–</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="resultsSection">
+    <div id="summaryBanner"></div>
+
+    <!-- Visual diff -->
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-title">Visual Diff — rotated polygon boxes from EasyOCR</div>
+      <div class="grid2">
+        <div class="diff-canvas-wrap">
+          <div class="diff-legend">
+            <div class="dot" style="background:var(--green)"></div>
+            <span>Original — words missing from scan</span>
+          </div>
+          <canvas id="refCanvas" class="diff-canvas"></canvas>
+        </div>
+        <div class="diff-canvas-wrap">
+          <div class="diff-legend">
+            <div class="dot" style="background:var(--red)"></div>
+            <span>Scanned — words not in original</span>
+          </div>
+          <canvas id="userCanvas" class="diff-canvas"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Text diff -->
+    <div class="card">
+      <div class="card-title">Extracted Text Comparison</div>
+      <div class="grid2">
+        <div>
+          <div class="preview-label" style="margin-bottom:8px">Original</div>
+          <div class="text-diff-box" id="refTextOut"></div>
+        </div>
+        <div>
+          <div class="preview-label" style="margin-bottom:8px">Scanned</div>
+          <div class="text-diff-box" id="userTextOut"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let refFile  = null;
+let userFile = null;
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Status ─────────────────────────────────────────────────────────────────────
+function setStatus(msg, state = 'info', progress = null) {
+  const bar   = $('statusBar');
+  const txt   = $('statusText');
+  const spin  = $('spinnerEl');
+  const track = $('progressTrack');
+  const pbar  = $('progressBar');
+
+  bar.classList.add('show');
+  txt.className  = state;
+  txt.textContent = msg;
+  spin.style.display  = state === 'loading' ? 'block' : 'none';
+  track.style.display = state === 'loading' ? 'block' : 'none';
+  if (progress !== null) pbar.style.width = Math.round(progress * 100) + '%';
+}
+
+// ── Upload / drag-drop ─────────────────────────────────────────────────────────
+function setupZone(inputId, zoneId, hintId, nameId, thumbId, cb) {
+  const input = $(inputId);
+  const zone  = $(zoneId);
+  const hint  = $(hintId);
+  const name  = $(nameId);
+  const thumb = $(thumbId);
+
+  function handle(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const short = file.name.length > 30 ? file.name.slice(0, 28) + '…' : file.name;
+    hint.style.display  = 'none';
+    name.textContent    = short;
+    name.style.display  = 'block';
+
+    // Thumbnail preview
+    const url = URL.createObjectURL(file);
+    thumb.src = url;
+    thumb.style.display = 'block';
+
+    cb(file);
+    checkReady();
+  }
+
+  input.addEventListener('change', e => { if (e.target.files[0]) handle(e.target.files[0]); });
+
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', ()  => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    handle(e.dataTransfer.files[0]);
+  });
+}
+
+setupZone('refInput',  'refZone',  'refHint',  'refName',  'refThumb',  f => refFile  = f);
+setupZone('userInput', 'userZone', 'userHint', 'userName', 'userThumb', f => userFile = f);
+
+function checkReady() {
+  $('runBtn').disabled = !(refFile && userFile);
+  if (refFile && userFile) setStatus('Both images ready — click Scan to compare.', 'info');
+}
+
+// ── Canvas drawing ─────────────────────────────────────────────────────────────
+const DISPLAY_MAX = 680;
+
+function drawImageOnCanvas(canvas, imageSrc) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const sc = Math.min(DISPLAY_MAX / img.naturalWidth, DISPLAY_MAX / img.naturalHeight, 1);
+      canvas.width  = Math.round(img.naturalWidth  * sc);
+      canvas.height = Math.round(img.naturalHeight * sc);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(sc);
+    };
+    img.src = imageSrc;
+  });
+}
+
+/**
+ * Draw an EasyOCR-style rotated polygon box on the canvas.
+ * polygon: [[x,y], [x,y], [x,y], [x,y]] in original image coords.
+ * scale:   display_canvas_width / original_image_width
+ */
+function drawPolygon(canvas, polygon, hexColor, scale) {
+  const ctx = canvas.getContext('2d');
+  const pts = polygon.map(([x, y]) => [x * scale, y * scale]);
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+
+  ctx.strokeStyle = hexColor;
+  ctx.lineWidth   = 2.5;
+  ctx.stroke();
+
+  // Semi-transparent fill
+  const r = parseInt(hexColor.slice(1,3), 16);
+  const g = parseInt(hexColor.slice(3,5), 16);
+  const b = parseInt(hexColor.slice(5,7), 16);
+  ctx.fillStyle = `rgba(${r},${g},${b},0.18)`;
+  ctx.fill();
+}
+
+// ── Main scan ──────────────────────────────────────────────────────────────────
+$('runBtn').addEventListener('click', async () => {
+  if (!refFile || !userFile) return;
+
+  $('runBtn').disabled = true;
+  $('resultsSection').classList.remove('show');
+  $('previewSection').classList.remove('show');
+
+  // ── Check server is up ──
+  try {
+    const health = await fetch('/health');
+    const hj = await health.json();
+    if (!hj.ocr_ready) {
+      setStatus('Server is still loading the OCR model — wait a moment and retry.', 'error');
+      $('runBtn').disabled = false;
+      return;
+    }
+  } catch (_) {
+    setStatus('Cannot reach server. Is Python running?  →  python main.py', 'error');
+    $('runBtn').disabled = false;
+    return;
+  }
+
+  // ── Build FormData and POST ──
+  setStatus('Sending images to Python backend…', 'loading', 0.05);
+
+  const form = new FormData();
+  form.append('ref_image',  refFile);
+  form.append('user_image', userFile);
+
+  // Fake staged progress while waiting for the (potentially slow) OCR
+  let fakeProgress = 0.05;
+  const fakeTimer = setInterval(() => {
+    fakeProgress = Math.min(fakeProgress + 0.015, 0.88);
+    setStatus(
+      fakeProgress < 0.30 ? 'Python: applying CLAHE normalisation + unsharp masking…' :
+      fakeProgress < 0.55 ? 'EasyOCR: CRAFT text detection in progress…' :
+                            'EasyOCR: CRNN text recognition…',
+      'loading',
+      fakeProgress,
+    );
+  }, 600);
+
+  let data;
+  try {
+    const res = await fetch('/compare', { method: 'POST', body: form });
+    clearInterval(fakeTimer);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || 'Server error');
+    }
+    data = await res.json();
+  } catch (err) {
+    clearInterval(fakeTimer);
+    setStatus('Error: ' + err.message, 'error');
+    $('runBtn').disabled = false;
+    return;
+  }
+
+  setStatus('Rendering results…', 'loading', 0.95);
+
+  // ── Show preprocessing previews ──
+  $('refPreview').src  = 'data:image/png;base64,' + data.ref_preview;
+  $('userPreview').src = 'data:image/png;base64,' + data.user_preview;
+  $('refWordCount').textContent  = data.ref_word_count;
+  $('userWordCount').textContent = data.user_word_count;
+  $('previewSection').classList.add('show');
+
+  // ── Draw diff canvases ──
+  const refUrl  = URL.createObjectURL(refFile);
+  const userUrl = URL.createObjectURL(userFile);
+
+  const [refScale, userScale] = await Promise.all([
+    drawImageOnCanvas($('refCanvas'),  refUrl),
+    drawImageOnCanvas($('userCanvas'), userUrl),
+  ]);
+
+  // Green on original  = words present in original but MISSING from scan
+  // Red on user canvas = words present in scan but NOT in original
+  for (const d of data.diff) {
+    if (d.type === 'removed') {
+      drawPolygon($('refCanvas'),  d.word.polygon, '#22c55e', refScale);
+    } else if (d.type === 'added') {
+      drawPolygon($('userCanvas'), d.word.polygon, '#ef4444', userScale);
+    }
+  }
+
+  // ── Build text diff ──
+  let refHtml = '', userHtml = '';
+  for (const d of data.diff) {
+    if (d.type === 'match') {
+      refHtml  += `<span class="chip-match">${esc(d.ref.text)}</span> `;
+      userHtml += `<span class="chip-match">${esc(d.user.text)}</span> `;
+    } else if (d.type === 'removed') {
+      refHtml  += `<span class="chip-removed">${esc(d.word.text)}</span> `;
+    } else {
+      userHtml += `<span class="chip-added">${esc(d.word.text)}</span> `;
+    }
+  }
+  $('refTextOut').innerHTML  = refHtml  || '<em>No text detected.</em>';
+  $('userTextOut').innerHTML = userHtml || '<em>No text detected.</em>';
+
+  // ── Summary banner ──
+  const banner = $('summaryBanner');
+  if (data.removed_count === 0 && data.added_count === 0) {
+    banner.className   = 'match';
+    banner.textContent = `✓  Labels match — no text differences detected`;
+  } else {
+    banner.className   = 'diff';
+    banner.textContent =
+      `⚠  Differences found — ` +
+      `${data.removed_count} word(s) missing from scan,  ` +
+      `${data.added_count} new word(s) in scan`;
+  }
+
+  $('resultsSection').classList.add('show');
+  $('resultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  setStatus(
+    `Done  ·  Original: ${data.ref_word_count} words  ·  Scanned: ${data.user_word_count} words  ·  ` +
+    `${data.removed_count} removed  ·  ${data.added_count} added`,
+    'success',
+    1.0,
+  );
+
+  $('runBtn').disabled = false;
+});
+</script>
+</body>
+</html>
