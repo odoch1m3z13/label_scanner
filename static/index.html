@@ -540,13 +540,19 @@ $('runBtn').addEventListener('click', async () => {
     drawImageOnCanvas($('userCanvas'), userUrl),
   ]);
 
-  // Green on original  = words present in original but MISSING from scan
-  // Red on user canvas = words present in scan but NOT in original
+  // Green on original  = word only in original (missing from scan)
+  // Red on user canvas = word only in scan (not in original)
+  // Red on BOTH        = word changed in place (modified)
   for (const d of data.diff) {
     if (d.type === 'removed') {
       drawPolygon($('refCanvas'),  d.word.polygon, '#22c55e', refScale);
     } else if (d.type === 'added') {
       drawPolygon($('userCanvas'), d.word.polygon, '#ef4444', userScale);
+    } else if (d.type === 'modified') {
+      // Red on ref  = shows where the original word was before it changed
+      // Red on user = shows the new (different) word in the scan
+      drawPolygon($('refCanvas'),  d.ref.polygon,  '#ef4444', refScale);
+      drawPolygon($('userCanvas'), d.user.polygon, '#ef4444', userScale);
     }
   }
 
@@ -558,8 +564,13 @@ $('runBtn').addEventListener('click', async () => {
       userHtml += `<span class="chip-match">${esc(d.user.text)}</span> `;
     } else if (d.type === 'removed') {
       refHtml  += `<span class="chip-removed">${esc(d.word.text)}</span> `;
-    } else {
+    } else if (d.type === 'added') {
       userHtml += `<span class="chip-added">${esc(d.word.text)}</span> `;
+    } else if (d.type === 'modified') {
+      // Show the original word (struck through in red) on the ref side
+      // Show the replacement word (highlighted red) on the user side
+      refHtml  += `<span class="chip-removed">${esc(d.ref.text)}</span> `;
+      userHtml += `<span class="chip-added">${esc(d.user.text)}</span> `;
     }
   }
   $('refTextOut').innerHTML  = refHtml  || '<em>No text detected.</em>';
@@ -567,15 +578,16 @@ $('runBtn').addEventListener('click', async () => {
 
   // ── Summary banner ──
   const banner = $('summaryBanner');
-  if (data.removed_count === 0 && data.added_count === 0) {
+  if (data.removed_count === 0 && data.added_count === 0 && data.modified_count === 0) {
     banner.className   = 'match';
     banner.textContent = `✓  Labels match — no text differences detected`;
   } else {
+    const parts = [];
+    if (data.modified_count > 0) parts.push(`${data.modified_count} word(s) changed`);
+    if (data.removed_count  > 0) parts.push(`${data.removed_count} word(s) missing from scan`);
+    if (data.added_count    > 0) parts.push(`${data.added_count} new word(s) in scan`);
     banner.className   = 'diff';
-    banner.textContent =
-      `⚠  Differences found — ` +
-      `${data.removed_count} word(s) missing from scan,  ` +
-      `${data.added_count} new word(s) in scan`;
+    banner.textContent = `⚠  Differences found — ${parts.join(',  ')}`;
   }
 
   $('resultsSection').classList.add('show');
@@ -583,7 +595,7 @@ $('runBtn').addEventListener('click', async () => {
 
   setStatus(
     `Done  ·  Original: ${data.ref_word_count} words  ·  Scanned: ${data.user_word_count} words  ·  ` +
-    `${data.removed_count} removed  ·  ${data.added_count} added`,
+    `${data.modified_count} changed  ·  ${data.removed_count} removed  ·  ${data.added_count} added`,
     'success',
     1.0,
   );
