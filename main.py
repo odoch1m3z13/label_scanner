@@ -180,8 +180,6 @@ async def lifespan(app: FastAPI):
     """
     global _pool
 
-    # ── Pre-download models in main process ─────────────────────────────────
-    # This ensures both workers don't race to download simultaneously
     log.info("Pre-warming PaddleOCR models in main process…")
     try:
         from paddleocr import PaddleOCR  # noqa: PLC0415
@@ -191,7 +189,7 @@ async def lifespan(app: FastAPI):
             use_gpu=False,
             show_log=False,
         )
-        # Trigger model download with a tiny dummy image
+
         _prewarmer.ocr(np.zeros((10, 10, 3), np.uint8))
         del _prewarmer
         log.info("Models pre-downloaded successfully.")
@@ -202,8 +200,7 @@ async def lifespan(app: FastAPI):
     log.info("Starting 2 OCR worker processes (%d threads each)…", _THREADS_PER_WORKER)
     _pool = ProcessPoolExecutor(max_workers=2, initializer=_worker_init)
 
-    # Submit two blank-image jobs to force both workers to spawn and warm up
-    # before the first real request arrives.
+    
     loop  = asyncio.get_event_loop()
     blank = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))[1].tobytes()
     await asyncio.gather(
@@ -212,17 +209,15 @@ async def lifespan(app: FastAPI):
     )
     log.info("Both OCR workers ready.")
 
-    yield  # ── Server is running ───────────────────────────────────────────
+    yield  
 
-    # ── Shutdown ─────────────────────────────────────────────────────────────
+
     if _pool:
         _pool.shutdown(wait=False)
 
 
 app = FastAPI(title="Label Diff Scanner", version="4.0", lifespan=lifespan)
 
-
-# ── Image helpers ─────────────────────────────────────────────────────────────
 
 def _load_image(data: bytes) -> np.ndarray:
     arr = np.frombuffer(data, np.uint8)
@@ -251,7 +246,6 @@ def _to_b64(img: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode()
 
 
-# ── OCR result → word list ────────────────────────────────────────────────────
 
 def _clean(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
@@ -316,8 +310,6 @@ def _ocr_results_to_words(
     words.sort(key=lambda w: (w["bbox"]["y"] // 20, w["bbox"]["x"]))
     return words
 
-
-# ── Diff: fuzzy LCS + spatial second-pass ────────────────────────────────────
 
 def _levenshtein(a: str, b: str) -> int:
     if a == b:  return 0
@@ -420,7 +412,6 @@ def _smart_diff(wa: list[dict], wb: list[dict],
     return _spatial_second_pass(_fuzzy_lcs_diff(wa, wb), ref_h, user_h)
 
 
-# ── API ───────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 async def root() -> HTMLResponse:
@@ -491,11 +482,9 @@ async def health() -> dict:
     return {"status": "ok", "workers_ready": _pool is not None}
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import multiprocessing
     import uvicorn
-    # "spawn" avoids fork-safety issues with Paddle's C++ runtime
+
     multiprocessing.set_start_method("spawn", force=True)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
