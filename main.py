@@ -53,9 +53,6 @@ def _worker_init() -> None:
     os.environ["MKL_NUM_THREADS"]    = str(_THREADS_PER_WORKER)
     os.environ["PADDLE_NUM_THREADS"] = str(_THREADS_PER_WORKER)
     os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    # Increase download timeout and disable parallel downloads
-    os.environ["PADDLE_DOWNLOAD_TIMEOUT"] = "600"
-    os.environ["PYTHONUNBUFFERED"] = "1"
 
     from paddleocr import PaddleOCR  # noqa: PLC0415
 
@@ -67,7 +64,6 @@ def _worker_init() -> None:
         cpu_threads=_THREADS_PER_WORKER,
         show_log=False,
         enable_mkldnn=True,   # Intel MKL-DNN — ~30% faster on x86 CPUs
-        warmup=False,         # Skip warmup to speed up initialization
     )
 
     logging.getLogger(__name__).info(
@@ -180,27 +176,12 @@ async def lifespan(app: FastAPI):
     """
     global _pool
 
-    log.info("Pre-warming PaddleOCR models in main process…")
-    try:
-        from paddleocr import PaddleOCR  # noqa: PLC0415
-        _prewarmer = PaddleOCR(
-            use_angle_cls=True,
-            lang="en",
-            use_gpu=False,
-            show_log=False,
-        )
-
-        _prewarmer.ocr(np.zeros((10, 10, 3), np.uint8))
-        del _prewarmer
-        log.info("Models pre-downloaded successfully.")
-    except Exception as e:
-        log.warning("Pre-download failed (non-fatal): %s", e)
-
     # ── Startup ─────────────────────────────────────────────────────────────
     log.info("Starting 2 OCR worker processes (%d threads each)…", _THREADS_PER_WORKER)
     _pool = ProcessPoolExecutor(max_workers=2, initializer=_worker_init)
 
-    
+    # Submit two blank-image jobs to force both workers to spawn and warm up
+    # before the first real request arrives.
     loop  = asyncio.get_event_loop()
     blank = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))[1].tobytes()
     await asyncio.gather(
@@ -209,15 +190,17 @@ async def lifespan(app: FastAPI):
     )
     log.info("Both OCR workers ready.")
 
-    yield  
+    yield  # ── Server is running ───────────────────────────────────────────
 
-
+    # ── Shutdown ─────────────────────────────────────────────────────────────
     if _pool:
         _pool.shutdown(wait=False)
 
 
 app = FastAPI(title="Label Diff Scanner", version="4.0", lifespan=lifespan)
 
+
+# ── Image helpers ─────────────────────────────────────────────────────────────
 
 def _load_image(data: bytes) -> np.ndarray:
     arr = np.frombuffer(data, np.uint8)
@@ -246,6 +229,7 @@ def _to_b64(img: np.ndarray) -> str:
     return base64.b64encode(buf.tobytes()).decode()
 
 
+# ── OCR result → word list ────────────────────────────────────────────────────
 
 def _clean(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
@@ -310,6 +294,8 @@ def _ocr_results_to_words(
     words.sort(key=lambda w: (w["bbox"]["y"] // 20, w["bbox"]["x"]))
     return words
 
+
+# ── Diff: fuzzy LCS + spatial second-pass ────────────────────────────────────
 
 def _levenshtein(a: str, b: str) -> int:
     if a == b:  return 0
@@ -407,9 +393,267 @@ def _spatial_second_pass(diff: list[dict], ref_h: int, user_h: int) -> list[dict
     return result
 
 
+
 def _smart_diff(wa: list[dict], wb: list[dict],
                 ref_h: int, user_h: int) -> list[dict]:
     return _spatial_second_pass(_fuzzy_lcs_diff(wa, wb), ref_h, user_h)
+
+
+# ── Color change detection ────────────────────────────────────────────────────
+# Operates on the ORIGINAL (non-preprocessed) images so CLAHE/USM never
+# distort the chromaticity values we are measuring.
+
+_COLOR_DELTA_THRESHOLD = 15.0  # Delta E threshold — matches the 75% text fuzzy threshold intent
+_MIN_INK_PIXELS        = 8     # minimum ink pixels after Otsu mask; below this we skip the word
+
+
+def _sample_ink_lab(img_bgr: np.ndarray, polygon: list) -> tuple[float, float] | None:
+    """
+    Extract the LAB a* and b* colour of the INK inside a word polygon,
+    using Otsu's thresholding to isolate text pixels from the background.
+
+    Pipeline (as discussed):
+      1. Crop the bounding rect of the polygon from the original image.
+      2. Build a polygon mask inside that crop.
+      3. Convert the crop to grayscale and apply Otsu's threshold to
+         separate ink from background — Otsu finds the optimal split
+         between the two dominant intensity clusters automatically.
+      4. Combine the polygon mask and the Otsu ink mask so we only look
+         at pixels that are (a) inside the word region AND (b) identified
+         as ink by Otsu.
+      5. Convert the crop to LAB and use cv2.mean() with the combined mask
+         to get the average LAB colour of the ink pixels only.
+      6. Return (a*, b*) — chromaticity only; L* (luminance) is ignored so
+         that brightness differences between two cameras don't skew results.
+
+    Returns None if the region is outside the image or has too few ink pixels
+    for a reliable reading.
+    """
+    h, w = img_bgr.shape[:2]
+
+    # ── Step 1: compute the axis-aligned crop rectangle ──────────────────────
+    pts    = np.array(polygon, dtype=np.int32)
+    rx, ry, rw, rh = cv2.boundingRect(pts)
+
+    # Clamp to image bounds
+    rx  = max(0, rx);  ry  = max(0, ry)
+    rw  = min(rw, w - rx);  rh  = min(rh, h - ry)
+    if rw < 2 or rh < 2:
+        return None
+
+    crop = img_bgr[ry:ry+rh, rx:rx+rw].copy()
+
+    # ── Step 2: polygon mask in crop-local coordinates ────────────────────────
+    shifted = pts - np.array([rx, ry])
+    poly_mask = np.zeros((rh, rw), dtype=np.uint8)
+    cv2.fillPoly(poly_mask, [shifted], 255)
+
+    # ── Step 3: Otsu threshold on grayscale crop ──────────────────────────────
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    _, otsu = cv2.threshold(gray, 0, 255,
+                             cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # THRESH_BINARY_INV makes ink white (255) and background black (0),
+    # which is correct regardless of whether the label is light-on-dark
+    # or dark-on-light — Otsu picks the split automatically.
+
+    # ── Step 4: combined mask — ink pixels inside the polygon only ────────────
+    ink_mask = cv2.bitwise_and(poly_mask, otsu)
+    ink_count = int(np.count_nonzero(ink_mask))
+    if ink_count < _MIN_INK_PIXELS:
+        # Too few ink pixels (tiny / blurry word) — skip to avoid noise
+        return None
+
+    # ── Step 5: mean LAB colour of ink pixels via cv2.mean() + mask ──────────
+    lab  = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+    means = cv2.mean(lab, mask=ink_mask)   # returns (L*, a*, b*, _)
+
+    # ── Step 6: return chromaticity only ─────────────────────────────────────
+    return float(means[1]), float(means[2])   # a*, b*
+
+
+def _compute_chroma_calibration(
+    diff: list[dict],
+    ref_raw: np.ndarray,
+    user_raw: np.ndarray,
+) -> tuple[float, float]:
+    """
+    Estimate the global camera-to-camera LAB chromaticity offset by sampling
+    the ink colour of all exact-match word pairs (same text, assumed same ink)
+    and taking the median a* and b* difference.
+
+    Subtracting this offset from per-word comparisons neutralises white-balance
+    and colour-temperature differences between the two cameras, leaving only
+    genuine label colour changes.
+    """
+    a_deltas: list[float] = []
+    b_deltas: list[float] = []
+    for d in diff:
+        if d["type"] != "match":
+            continue
+        rc = _sample_ink_lab(ref_raw,  d["ref"]["polygon"])
+        uc = _sample_ink_lab(user_raw, d["user"]["polygon"])
+        if rc and uc:
+            a_deltas.append(rc[0] - uc[0])
+            b_deltas.append(rc[1] - uc[1])
+    if not a_deltas:
+        return 0.0, 0.0
+    return float(np.median(a_deltas)), float(np.median(b_deltas))
+
+
+def _detect_text_color_changes(
+    diff: list[dict],
+    ref_raw: np.ndarray,
+    user_raw: np.ndarray,
+) -> tuple[list[dict], tuple[float, float]]:
+    """
+    Promote 'match' diff entries to 'color_changed' when the ink colour of
+    the matched word differs significantly between the two images.
+
+    Uses Otsu masking (_sample_ink_lab) to measure only ink pixels — not
+    the background — then applies the global camera offset from
+    _compute_chroma_calibration before computing Delta E (Euclidean distance
+    in LAB a*b* space, equivalent to simplified ΔE₇₆ ignoring lightness).
+
+    Also returns the computed chroma offset so _detect_visual_tampering can
+    reuse it without recalculating.
+    """
+    a_off, b_off = _compute_chroma_calibration(diff, ref_raw, user_raw)
+    result: list[dict] = []
+    for d in diff:
+        if d["type"] == "match":
+            rc = _sample_ink_lab(ref_raw,  d["ref"]["polygon"])
+            uc = _sample_ink_lab(user_raw, d["user"]["polygon"])
+            if rc and uc:
+                # Delta E in a*b* plane after subtracting the camera offset
+                da    = (rc[0] - uc[0]) - a_off
+                db    = (rc[1] - uc[1]) - b_off
+                delta = (da**2 + db**2) ** 0.5
+                if delta > _COLOR_DELTA_THRESHOLD:
+                    result.append({**d, "type": "color_changed",
+                                   "color_delta": round(delta, 1)})
+                    continue
+        result.append(d)
+    return result, (a_off, b_off)
+
+
+# ── Visual tampering detection (non-text regions) ─────────────────────────────
+
+_MIN_TAMPER_AREA_FRAC = 0.002   # region must be ≥ 0.2% of image area to be reported
+_TAMPER_COLOR_THRESH  = 18.0    # LAB chroma delta to flag a pixel as "different"
+_MIN_KEYPOINTS        = 12      # ORB inliers needed to trust the homography
+
+
+def _detect_visual_tampering(
+    ref_raw: np.ndarray,
+    user_raw: np.ndarray,
+    flagged_ref_boxes: list[dict],
+    chroma_offset: tuple[float, float],
+) -> tuple[list[dict], list[dict], str]:
+    """
+    Detect non-text colour tampering (recoloured graphics, overlaid shapes, etc.).
+
+    Pipeline:
+      1. ORB keypoint matching → RANSAC homography → warp user onto ref canvas
+      2. Subtract LAB a*, b* channels (colour only; luminance ignored so lighting
+         differences between cameras don't produce false positives)
+      3. Apply the global camera chroma offset already computed for text words
+      4. Threshold → morphological close + open → find contours
+      5. Filter regions already covered by text-level diff boxes (no double report)
+      6. Map remaining ref-space boxes back to user-image space via H⁻¹
+
+    Returns (ref_boxes, user_boxes, status_string).
+    status != "ok" signals low confidence — caller should warn rather than flag.
+    """
+    ref_gray  = cv2.cvtColor(ref_raw,  cv2.COLOR_BGR2GRAY)
+    user_gray = cv2.cvtColor(user_raw, cv2.COLOR_BGR2GRAY)
+
+    orb      = cv2.ORB_create(nfeatures=3000)
+    kp1, d1  = orb.detectAndCompute(ref_gray,  None)
+    kp2, d2  = orb.detectAndCompute(user_gray, None)
+
+    if d1 is None or d2 is None or len(kp1) < _MIN_KEYPOINTS or len(kp2) < _MIN_KEYPOINTS:
+        return [], [], "insufficient_keypoints"
+
+    bf      = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = sorted(bf.match(d1, d2), key=lambda m: m.distance)
+    good    = matches[: min(200, len(matches))]
+    if len(good) < _MIN_KEYPOINTS:
+        return [], [], "insufficient_matches"
+
+    src_pts  = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    dst_pts  = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    H, hmask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+    if H is None or hmask is None or int(hmask.ravel().sum()) < _MIN_KEYPOINTS:
+        return [], [], "homography_failed"
+
+    ref_h, ref_w   = ref_raw.shape[:2]
+    user_h, user_w = user_raw.shape[:2]
+    user_aligned   = cv2.warpPerspective(user_raw, H, (ref_w, ref_h))
+
+    # Mask out black pixels introduced by warping (outside source image bounds)
+    valid = (user_aligned[:, :, 0] > 0) |             (user_aligned[:, :, 1] > 0) |             (user_aligned[:, :, 2] > 0)
+
+    ref_lab  = cv2.cvtColor(ref_raw,      cv2.COLOR_BGR2LAB).astype(np.float32)
+    user_lab = cv2.cvtColor(user_aligned, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+    a_off, b_off = chroma_offset
+    diff_a = (ref_lab[:, :, 1] - user_lab[:, :, 1]) - a_off
+    diff_b = (ref_lab[:, :, 2] - user_lab[:, :, 2]) - b_off
+    chroma_diff          = np.sqrt(diff_a**2 + diff_b**2)
+    chroma_diff[~valid]  = 0.0
+
+    binary = (chroma_diff > _TAMPER_COLOR_THRESH).astype(np.uint8) * 255
+    kclose = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 20))
+    kopen  = cv2.getStructuringElement(cv2.MORPH_RECT,  (5,  5))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kclose)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN,  kopen)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    min_area  = ref_h * ref_w * _MIN_TAMPER_AREA_FRAC
+    ref_boxes:  list[dict] = []
+    user_boxes: list[dict] = []
+
+    try:
+        H_inv = np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        H_inv = None
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) < min_area:
+            continue
+        x, y, bw, bh = cv2.boundingRect(cnt)
+
+        # Skip if region is already substantially covered by a text diff box
+        dominated = False
+        for tb in flagged_ref_boxes:
+            tx, ty, tw, th = tb["x"], tb["y"], tb["w"], tb["h"]
+            ix = max(0, min(x + bw, tx + tw) - max(x, tx))
+            iy = max(0, min(y + bh, ty + th) - max(y, ty))
+            if bw * bh > 0 and (ix * iy) / (bw * bh) > 0.5:
+                dominated = True
+                break
+        if dominated:
+            continue
+
+        ref_boxes.append({"x": int(x), "y": int(y), "w": int(bw), "h": int(bh)})
+
+        # Map box corners back to user-image space via H⁻¹
+        if H_inv is not None:
+            corners = np.float32([
+                [x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]
+            ]).reshape(-1, 1, 2)
+            mapped = cv2.perspectiveTransform(corners, H_inv).reshape(-1, 2)
+            uxs = np.clip(mapped[:, 0], 0, user_w)
+            uys = np.clip(mapped[:, 1], 0, user_h)
+            user_boxes.append({
+                "x": int(uxs.min()), "y": int(uys.min()),
+                "w": int(uxs.max() - uxs.min()),
+                "h": int(uys.max() - uys.min()),
+            })
+
+    return ref_boxes, user_boxes, "ok"
 
 
 
@@ -456,24 +700,49 @@ async def compare(
     user_words = _ocr_results_to_words(user_results, user_scale, user_h, user_w)
     log.info("ref: %d words  user: %d words", len(ref_words), len(user_words))
 
-    diff     = _smart_diff(ref_words, user_words, ref_h, user_h)
-    removed  = sum(1 for d in diff if d["type"] == "removed")
-    added    = sum(1 for d in diff if d["type"] == "added")
-    modified = sum(1 for d in diff if d["type"] == "modified")
-    log.info("Diff — %d modified  %d removed  %d added", modified, removed, added)
+    diff             = _smart_diff(ref_words, user_words, ref_h, user_h)
+    diff, chroma_off = _detect_text_color_changes(diff, ref_raw, user_raw)
+
+    removed       = sum(1 for d in diff if d["type"] == "removed")
+    added         = sum(1 for d in diff if d["type"] == "added")
+    modified      = sum(1 for d in diff if d["type"] == "modified")
+    color_changed = sum(1 for d in diff if d["type"] == "color_changed")
+
+    # Collect ref bboxes already flagged at word level so visual tampering
+    # detection doesn't double-report those regions.
+    flagged_ref_boxes: list[dict] = []
+    for d in diff:
+        if d["type"] == "removed":
+            flagged_ref_boxes.append(d["word"]["bbox"])
+        elif d["type"] in ("modified", "color_changed"):
+            flagged_ref_boxes.append(d["ref"]["bbox"])
+
+    tamper_ref, tamper_user, tamper_status = _detect_visual_tampering(
+        ref_raw, user_raw, flagged_ref_boxes, chroma_off
+    )
+
+    log.info(
+        "Diff — %d modified  %d removed  %d added  %d color_changed  "
+        "%d tamper_regions  (tamper_status=%s)",
+        modified, removed, added, color_changed, len(tamper_ref), tamper_status,
+    )
 
     return {
-        "diff":            diff,
-        "ref_word_count":  len(ref_words),
-        "user_word_count": len(user_words),
-        "removed_count":   removed,
-        "added_count":     added,
-        "modified_count":  modified,
-        "ocr_time_s":      round(elapsed, 2),
-        "ref_size":        {"w": int(ref_w),  "h": int(ref_h)},
-        "user_size":       {"w": int(user_w), "h": int(user_h)},
-        "ref_preview":     _to_b64(_preprocess_for_preview(ref_raw)),
-        "user_preview":    _to_b64(_preprocess_for_preview(user_raw)),
+        "diff":                diff,
+        "ref_word_count":      len(ref_words),
+        "user_word_count":     len(user_words),
+        "removed_count":       removed,
+        "added_count":         added,
+        "modified_count":      modified,
+        "color_changed_count": color_changed,
+        "tamper_boxes_ref":    tamper_ref,
+        "tamper_boxes_user":   tamper_user,
+        "tamper_status":       tamper_status,
+        "ocr_time_s":          round(elapsed, 2),
+        "ref_size":            {"w": int(ref_w),  "h": int(ref_h)},
+        "user_size":           {"w": int(user_w), "h": int(user_h)},
+        "ref_preview":         _to_b64(_preprocess_for_preview(ref_raw)),
+        "user_preview":        _to_b64(_preprocess_for_preview(user_raw)),
     }
 
 
@@ -482,9 +751,11 @@ async def health() -> dict:
     return {"status": "ok", "workers_ready": _pool is not None}
 
 
+
+
 if __name__ == "__main__":
     import multiprocessing
     import uvicorn
-
+    # "spawn" avoids fork-safety issues with Paddle's C++ runtime
     multiprocessing.set_start_method("spawn", force=True)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
