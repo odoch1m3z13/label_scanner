@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Label Diff Scanner</title>
   <style>
-
+    /* ─── Reset & Base ────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
@@ -35,7 +35,7 @@
       padding: 24px 16px 48px;
     }
 
-
+    /* ─── Layout ──────────────────────────────────────────────────────────────── */
     .wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
 
     .card {
@@ -57,12 +57,12 @@
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
 
-
+    /* ─── Header ──────────────────────────────────────────────────────────────── */
     header { text-align: center; padding: 12px 0 4px; }
     header h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: #fff; }
     header p  { color: var(--muted); margin-top: 6px; font-size: 13px; }
 
-
+    /* ─── Status bar ──────────────────────────────────────────────────────────── */
     #statusBar {
       display: none;
       align-items: center;
@@ -96,7 +96,7 @@
       transition: width .3s ease;
     }
 
-
+    /* ─── Upload zones ────────────────────────────────────────────────────────── */
     .upload-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: block; }
 
     .drop-zone {
@@ -131,7 +131,7 @@
       display: none;
     }
 
-
+    /* ─── Scan button ─────────────────────────────────────────────────────────── */
     #runBtn {
       width: 100%;
       padding: 13px;
@@ -148,7 +148,7 @@
     #runBtn:hover:not(:disabled) { background: var(--accent-h); }
     #runBtn:disabled { opacity: .4; cursor: not-allowed; }
 
-
+    /* ─── OCR preview ─────────────────────────────────────────────────────────── */
     #previewSection { display: none; }
     #previewSection.show { display: block; }
 
@@ -164,11 +164,11 @@
     }
     .word-count span { color: var(--accent-h); font-weight: 700; }
 
-
+    /* ─── Results ─────────────────────────────────────────────────────────────── */
     #resultsSection { display: none; }
     #resultsSection.show { display: block; }
 
-
+    /* Summary banner */
     #summaryBanner {
       border-radius: 10px;
       padding: 14px 20px;
@@ -188,7 +188,7 @@
       color: #f87171;
     }
 
-
+    /* Diff canvases */
     .diff-canvas-wrap { display: flex; flex-direction: column; }
     .diff-legend {
       display: flex; align-items: center; gap: 8px;
@@ -200,7 +200,7 @@
       border: 1px solid var(--border2); display: block;
     }
 
-
+    /* Text diff */
     .text-diff-box {
       background: var(--bg);
       border: 1px solid var(--border2);
@@ -225,7 +225,7 @@
       padding: 1px 6px; display: inline-block; margin: 1px 2px;
     }
 
-
+    /* Scrollbar */
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: var(--surface2); }
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
@@ -234,13 +234,13 @@
 <body>
 <div class="wrap">
 
-
+  <!-- Header -->
   <header>
     <h1>Label Diff Scanner</h1>
     <p>Python / EasyOCR / OpenCV — upload two label images to detect text differences</p>
   </header>
 
-
+  <!-- Status -->
   <div id="statusBar">
     <div id="spinnerEl" class="spinner" style="display:none"></div>
     <div style="flex:1">
@@ -251,12 +251,12 @@
     </div>
   </div>
 
-
+  <!-- Upload card -->
   <div class="card">
     <div class="card-title">Upload Labels</div>
     <div class="grid2" style="margin-bottom:16px">
 
-
+      <!-- Reference -->
       <div>
         <span class="upload-label">1 — Original Label</span>
         <div class="drop-zone" id="refZone">
@@ -268,7 +268,7 @@
         </div>
       </div>
 
-
+      <!-- User / Scanned -->
       <div>
         <span class="upload-label">2 — Scanned Label</span>
         <div class="drop-zone" id="userZone">
@@ -284,7 +284,7 @@
     <button id="runBtn" disabled>Scan &amp; Compare Labels</button>
   </div>
 
-
+  <!-- OCR preview (what the backend processed) -->
   <div id="previewSection">
     <div class="card">
       <div class="card-title">OpenCV Preprocessing Preview — what EasyOCR received</div>
@@ -303,11 +303,11 @@
     </div>
   </div>
 
-
+  <!-- Results -->
   <div id="resultsSection">
     <div id="summaryBanner"></div>
 
-
+    <!-- Visual diff -->
     <div class="card" style="margin-bottom:20px">
       <div class="card-title">Visual Diff — rotated polygon boxes from EasyOCR</div>
       <div class="grid2">
@@ -328,7 +328,7 @@
       </div>
     </div>
 
-
+    <!-- Text diff -->
     <div class="card">
       <div class="card-title">Extracted Text Comparison</div>
       <div class="grid2">
@@ -349,11 +349,11 @@
 <script>
 'use strict';
 
-
+// ── State ──────────────────────────────────────────────────────────────────────
 let refFile  = null;
 let userFile = null;
 
-
+// ── Helpers ────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
 function esc(s) {
@@ -361,7 +361,7 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-
+// ── Status ─────────────────────────────────────────────────────────────────────
 function setStatus(msg, state = 'info', progress = null) {
   const bar   = $('statusBar');
   const txt   = $('statusText');
@@ -377,7 +377,7 @@ function setStatus(msg, state = 'info', progress = null) {
   if (progress !== null) pbar.style.width = Math.round(progress * 100) + '%';
 }
 
-
+// ── Upload / drag-drop ─────────────────────────────────────────────────────────
 function setupZone(inputId, zoneId, hintId, nameId, thumbId, cb) {
   const input = $(inputId);
   const zone  = $(zoneId);
@@ -392,7 +392,7 @@ function setupZone(inputId, zoneId, hintId, nameId, thumbId, cb) {
     name.textContent    = short;
     name.style.display  = 'block';
 
-
+    // Thumbnail preview
     const url = URL.createObjectURL(file);
     thumb.src = url;
     thumb.style.display = 'block';
@@ -420,7 +420,7 @@ function checkReady() {
   if (refFile && userFile) setStatus('Both images ready — click Scan to compare.', 'info');
 }
 
-
+// ── Canvas drawing ─────────────────────────────────────────────────────────────
 const DISPLAY_MAX = 680;
 
 function drawImageOnCanvas(canvas, imageSrc) {
@@ -437,7 +437,11 @@ function drawImageOnCanvas(canvas, imageSrc) {
   });
 }
 
-
+/**
+ * Draw a rotated polygon box (EasyOCR / PaddleOCR 4-corner format).
+ * polygon: [[x,y], [x,y], [x,y], [x,y]] in original image coords.
+ * scale:   display_canvas_width / original_image_width
+ */
 function drawPolygon(canvas, polygon, hexColor, scale) {
   const ctx = canvas.getContext('2d');
   const pts = polygon.map(([x, y]) => [x * scale, y * scale]);
@@ -451,7 +455,6 @@ function drawPolygon(canvas, polygon, hexColor, scale) {
   ctx.lineWidth   = 2.5;
   ctx.stroke();
 
-
   const r = parseInt(hexColor.slice(1,3), 16);
   const g = parseInt(hexColor.slice(3,5), 16);
   const b = parseInt(hexColor.slice(5,7), 16);
@@ -459,6 +462,26 @@ function drawPolygon(canvas, polygon, hexColor, scale) {
   ctx.fill();
 }
 
+/**
+ * Draw an axis-aligned bounding box.
+ * box: { x, y, w, h } in original image coords.
+ * scale: display scale factor.
+ */
+function drawRect(canvas, box, hexColor, scale) {
+  const ctx = canvas.getContext('2d');
+  const x = box.x * scale, y = box.y * scale;
+  const w = box.w * scale, h = box.h * scale;
+
+  ctx.strokeStyle = hexColor;
+  ctx.lineWidth   = 2.5;
+  ctx.strokeRect(x, y, w, h);
+
+  const r = parseInt(hexColor.slice(1,3), 16);
+  const g = parseInt(hexColor.slice(3,5), 16);
+  const b = parseInt(hexColor.slice(5,7), 16);
+  ctx.fillStyle = `rgba(${r},${g},${b},0.18)`;
+  ctx.fillRect(x, y, w, h);
+}
 
 $('runBtn').addEventListener('click', async () => {
   if (!refFile || !userFile) return;
@@ -467,7 +490,7 @@ $('runBtn').addEventListener('click', async () => {
   $('resultsSection').classList.remove('show');
   $('previewSection').classList.remove('show');
 
-
+  // ── Check server is up ──
   try {
     const health = await fetch('/health');
     const hj = await health.json();
@@ -482,14 +505,14 @@ $('runBtn').addEventListener('click', async () => {
     return;
   }
 
-
+  // ── Build FormData and POST ──
   setStatus('Sending images to Python backend…', 'loading', 0.05);
 
   const form = new FormData();
   form.append('ref_image',  refFile);
   form.append('user_image', userFile);
 
-
+  // Fake staged progress while waiting for parallel OCR in the workers
   let fakeProgress = 0.05;
   const fakeTimer = setInterval(() => {
     fakeProgress = Math.min(fakeProgress + 0.018, 0.88);
@@ -520,14 +543,14 @@ $('runBtn').addEventListener('click', async () => {
 
   setStatus('Rendering results…', 'loading', 0.95);
 
-
+  // ── Show preprocessing previews ──
   $('refPreview').src  = 'data:image/png;base64,' + data.ref_preview;
   $('userPreview').src = 'data:image/png;base64,' + data.user_preview;
   $('refWordCount').textContent  = data.ref_word_count;
   $('userWordCount').textContent = data.user_word_count;
   $('previewSection').classList.add('show');
 
-
+  // ── Draw diff canvases ──
   const refUrl  = URL.createObjectURL(refFile);
   const userUrl = URL.createObjectURL(userFile);
 
@@ -536,20 +559,30 @@ $('runBtn').addEventListener('click', async () => {
     drawImageOnCanvas($('userCanvas'), userUrl),
   ]);
 
-  
+  // ── Draw word-level diff boxes ──
+  // Green on original  = word only in original (missing from scan)
+  // Red on user canvas = word only in scan (not in original)
+  // Red on BOTH        = word changed in place (text modified or colour changed)
   for (const d of data.diff) {
     if (d.type === 'removed') {
       drawPolygon($('refCanvas'),  d.word.polygon, '#22c55e', refScale);
     } else if (d.type === 'added') {
       drawPolygon($('userCanvas'), d.word.polygon, '#ef4444', userScale);
-    } else if (d.type === 'modified') {
-      
+    } else if (d.type === 'modified' || d.type === 'color_changed') {
       drawPolygon($('refCanvas'),  d.ref.polygon,  '#22c55e', refScale);
       drawPolygon($('userCanvas'), d.user.polygon, '#ef4444', userScale);
     }
   }
 
+  // ── Draw visual tampering boxes (non-text colour differences) ──
+  // tamper_boxes_ref are in original ref image space (accurate)
+  // tamper_boxes_user are mapped back via H⁻¹ (accurate)
+  if (data.tamper_status === 'ok') {
+    for (const box of (data.tamper_boxes_ref  || [])) drawRect($('refCanvas'),  box, '#22c55e', refScale);
+    for (const box of (data.tamper_boxes_user || [])) drawRect($('userCanvas'), box, '#ef4444', userScale);
+  }
 
+  // ── Build text diff ──
   let refHtml = '', userHtml = '';
   for (const d of data.diff) {
     if (d.type === 'match') {
@@ -560,24 +593,33 @@ $('runBtn').addEventListener('click', async () => {
     } else if (d.type === 'added') {
       userHtml += `<span class="chip-added">${esc(d.word.text)}</span> `;
     } else if (d.type === 'modified') {
-      
       refHtml  += `<span class="chip-removed">${esc(d.ref.text)}</span> `;
       userHtml += `<span class="chip-added">${esc(d.user.text)}</span> `;
+    } else if (d.type === 'color_changed') {
+      // Same text, different colour — show with a colour-change indicator
+      refHtml  += `<span class="chip-removed" title="colour changed">${esc(d.ref.text)} 🎨</span> `;
+      userHtml += `<span class="chip-added"   title="colour changed">${esc(d.user.text)} 🎨</span> `;
     }
   }
   $('refTextOut').innerHTML  = refHtml  || '<em>No text detected.</em>';
   $('userTextOut').innerHTML = userHtml || '<em>No text detected.</em>';
 
+  // ── Summary banner ──
+  const banner   = $('summaryBanner');
+  const nTamper  = (data.tamper_boxes_ref || []).length;
+  const anyDiff  = data.removed_count > 0 || data.added_count > 0 ||
+                   data.modified_count > 0 || data.color_changed_count > 0 || nTamper > 0;
 
-  const banner = $('summaryBanner');
-  if (data.removed_count === 0 && data.added_count === 0 && data.modified_count === 0) {
+  if (!anyDiff) {
     banner.className   = 'match';
-    banner.textContent = `✓  Labels match — no text differences detected`;
+    banner.textContent = `✓  Labels match — no differences detected`;
   } else {
     const parts = [];
-    if (data.modified_count > 0) parts.push(`${data.modified_count} word(s) changed`);
-    if (data.removed_count  > 0) parts.push(`${data.removed_count} word(s) missing from scan`);
-    if (data.added_count    > 0) parts.push(`${data.added_count} new word(s) in scan`);
+    if (data.modified_count      > 0) parts.push(`${data.modified_count} word(s) changed`);
+    if (data.color_changed_count > 0) parts.push(`${data.color_changed_count} word(s) recoloured`);
+    if (data.removed_count       > 0) parts.push(`${data.removed_count} word(s) missing from scan`);
+    if (data.added_count         > 0) parts.push(`${data.added_count} new word(s) in scan`);
+    if (nTamper                  > 0) parts.push(`${nTamper} visual tampering region(s)`);
     banner.className   = 'diff';
     banner.textContent = `⚠  Differences found — ${parts.join(',  ')}`;
   }
@@ -586,10 +628,11 @@ $('runBtn').addEventListener('click', async () => {
   $('resultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   setStatus(
-    `Done in ${data.ocr_time_s}s  ·  Original: ${data.ref_word_count} words  ·  Scanned: ${data.user_word_count} words  ·  ` +
-    `${data.modified_count} changed  ·  ${data.removed_count} removed  ·  ${data.added_count} added`,
-    'success',
-    1.0,
+    `Done in ${data.ocr_time_s}s  ·  ` +
+    `${data.modified_count} changed  ·  ${data.color_changed_count} recoloured  ·  ` +
+    `${data.removed_count} removed  ·  ${data.added_count} added  ·  ` +
+    `${nTamper} visual tamper region(s)`,
+    'success', 1.0,
   );
 
   $('runBtn').disabled = false;
