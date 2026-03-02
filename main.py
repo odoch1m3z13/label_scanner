@@ -42,9 +42,6 @@ def _worker_init() -> None:
     Runs once when each worker process starts.
     Loads PaddleOCR into module-global _paddle so it is reused across
     every request — zero reload cost per scan.
-
-    Pinned to PaddleOCR 2.7.3 + PaddlePaddle 2.6.2 — the stable 2.x line
-    with the full constructor API and no PIR executor issues.
     """
     global _paddle
 
@@ -58,7 +55,7 @@ def _worker_init() -> None:
 
     # PaddleOCR 2.7.x — full kwargs available, stable on CPU
     _paddle = PaddleOCR(
-        use_angle_cls=True,   # handle rotated text lines
+        use_angle_cls=False,  # FIX: Disabled for 300ms+ speedup per scan
         lang="en",
         use_gpu=False,
         cpu_threads=_THREADS_PER_WORKER,
@@ -72,23 +69,12 @@ def _worker_init() -> None:
 
 
 def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
-    """
-    Parse PaddleOCR result defensively across 2.x and 3.x return formats.
-
-    2.x format:  raw = [ [[[x,y],[x,y],[x,y],[x,y]], (text, conf)], ... ]
-                 (outer list per page, inner list per line)
-
-    3.x format:  raw = [ ResultObject ]  where each ResultObject is iterable
-                 and yields (box, (text, conf)) — identical shape but wrapped
-                 in a result class rather than a plain list.
-                 Some 3.x builds also expose .boxes / .txts / .scores attrs.
-    """
+    """Parse PaddleOCR result defensively across 2.x and 3.x return formats."""
     results: list[tuple[list, str, float]] = []
 
     if raw is None:
         return results
 
-    # Unwrap outer page list — always index 0 for single-image input
     try:
         lines = raw[0]  # type: ignore[index]
     except (TypeError, IndexError, KeyError):
@@ -101,7 +87,6 @@ def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
         if line is None:
             continue
 
-        # ── Try old 2.x / compatible 3.x format: (pts, (text, conf)) ──────
         try:
             pts_raw, text_conf = line
             text, conf = text_conf
@@ -111,7 +96,6 @@ def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
         except (TypeError, ValueError, IndexError):
             pass
 
-        # ── Try 3.x attribute-based format ──────────────────────────────────
         try:
             pts  = [[float(p[0]), float(p[1])] for p in line.bbox]   # type: ignore
             text = str(getattr(line, "text", getattr(line, "rec_text", ""))).strip()
@@ -127,9 +111,7 @@ def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
 def _worker_ocr(payload: bytes) -> tuple[list, float, int, int]:
     """
     Top-level worker function — pickle-safe, runs in a child process.
-
     Receives raw image bytes → preprocess → PaddleOCR → normalised result list.
-    Returns (results, upscale_scale, orig_h, orig_w).
     """
     arr = np.frombuffer(payload, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -139,17 +121,19 @@ def _worker_ocr(payload: bytes) -> tuple[list, float, int, int]:
     orig_h, orig_w = img.shape[:2]
 
     # ── Preprocess ──────────────────────────────────────────────────────────
+    # FIX: Scale DOWN before applying heavy OpenCV math to save massive CPU cycles
+    scale  = 1.0
+    target = 1_400
+    max_dim = max(orig_h, orig_w)
+    if max_dim != target:
+        scale = target / max_dim
+        interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=interp)
+
     gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     eq    = clahe.apply(gray)
-
-    scale  = 1.0
-    target = 1_400
-    if max(orig_h, orig_w) < target:
-        scale = target / max(orig_h, orig_w)
-        eq    = cv2.resize(eq, None, fx=scale, fy=scale,
-                           interpolation=cv2.INTER_CUBIC)
-
+    
     blur  = cv2.GaussianBlur(eq, (0, 0), 3)
     sharp = cv2.addWeighted(eq, 1.7, blur, -0.7, 0)
     proc  = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
@@ -170,18 +154,10 @@ _pool: ProcessPoolExecutor | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Modern FastAPI lifespan context manager — replaces the deprecated
-    @app.on_event("startup") / @app.on_event("shutdown") pattern.
-    """
     global _pool
-
-    # ── Startup ─────────────────────────────────────────────────────────────
     log.info("Starting 2 OCR worker processes (%d threads each)…", _THREADS_PER_WORKER)
     _pool = ProcessPoolExecutor(max_workers=2, initializer=_worker_init)
 
-    # Submit two blank-image jobs to force both workers to spawn and warm up
-    # before the first real request arrives.
     loop  = asyncio.get_event_loop()
     blank = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))[1].tobytes()
     await asyncio.gather(
@@ -190,9 +166,8 @@ async def lifespan(app: FastAPI):
     )
     log.info("Both OCR workers ready.")
 
-    yield  # ── Server is running ───────────────────────────────────────────
+    yield
 
-    # ── Shutdown ─────────────────────────────────────────────────────────────
     if _pool:
         _pool.shutdown(wait=False)
 
@@ -200,36 +175,34 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Label Diff Scanner", version="4.0", lifespan=lifespan)
 
 
-# ── Image helpers ─────────────────────────────────────────────────────────────
-
 def _load_image(data: bytes) -> np.ndarray:
     arr = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError("Could not decode image — is this a valid JPEG/PNG/WEBP?")
+        raise ValueError("Could not decode image.")
     return img
 
 
 def _preprocess_for_preview(img: np.ndarray) -> np.ndarray:
-    """CLAHE + USM for the browser preview PNG (runs in main process)."""
+    # Scale first, then filter (faster)
+    h, w = img.shape[:2]
+    if max(h, w) > 1_400:
+        sc = 1_400 / max(h, w)
+        img = cv2.resize(img, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+        
     gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     eq    = clahe.apply(gray)
-    h, w  = eq.shape
-    if max(h, w) < 1_400:
-        sc = 1_400 / max(h, w)
-        eq = cv2.resize(eq, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
     blur  = cv2.GaussianBlur(eq, (0, 0), 3)
     sharp = cv2.addWeighted(eq, 1.7, blur, -0.7, 0)
     return cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
 
 
 def _to_b64(img: np.ndarray) -> str:
-    _, buf = cv2.imencode(".png", img)
+    # FIX: Use JPEG instead of PNG for 5x faster network transmission
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return base64.b64encode(buf.tobytes()).decode()
 
-
-# ── OCR result → word list ────────────────────────────────────────────────────
 
 def _clean(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
@@ -237,11 +210,10 @@ def _clean(text: str) -> str:
 
 def _split_token(pts: list, text: str, conf: float, scale: float,
                  orig_h: int, orig_w: int) -> list[dict]:
-    """
-    Tokenisation normalisation — split multi-word OCR tokens and distribute
-    their bounding box proportionally by character count.
-    """
-    parts = [p for p in text.strip().split() if _clean(p)]
+                 
+    # FIX: Pad symbols so "OZ(640g)" splits correctly to "OZ" and "640g"
+    spaced_text = re.sub(r'([^\w\s])', r' \1 ', text)
+    parts = [p for p in spaced_text.strip().split() if _clean(p)]
     if not parts:
         return []
 
@@ -291,11 +263,15 @@ def _ocr_results_to_words(
         if conf < 0.25:
             continue
         words.extend(_split_token(pts, text, conf, scale, orig_h, orig_w))
-    words.sort(key=lambda w: (w["bbox"]["y"] // 20, w["bbox"]["x"]))
+        
+    if not words:
+        return []
+
+    # FIX: Dynamic line height. Fixes the massive "MillDCast & Thyme" box
+    median_h = max(10.0, float(np.median([w["bbox"]["h"] for w in words])))
+    words.sort(key=lambda w: (int(w["bbox"]["y"] / (median_h * 0.5)), w["bbox"]["x"]))
     return words
 
-
-# ── Diff: fuzzy LCS + spatial second-pass ────────────────────────────────────
 
 def _levenshtein(a: str, b: str) -> int:
     if a == b:  return 0
@@ -393,82 +369,39 @@ def _spatial_second_pass(diff: list[dict], ref_h: int, user_h: int) -> list[dict
     return result
 
 
-
 def _smart_diff(wa: list[dict], wb: list[dict],
                 ref_h: int, user_h: int) -> list[dict]:
     return _spatial_second_pass(_fuzzy_lcs_diff(wa, wb), ref_h, user_h)
 
 
-# ── Color change detection ────────────────────────────────────────────────────
-# Operates on the ORIGINAL (non-preprocessed) images so CLAHE/USM never
-# distort the chromaticity values we are measuring.
-
-_COLOR_DELTA_THRESHOLD = 15.0  # Delta E threshold — matches the 75% text fuzzy threshold intent
-_MIN_INK_PIXELS        = 8     # minimum ink pixels after Otsu mask; below this we skip the word
-
+_COLOR_DELTA_THRESHOLD = 15.0  
+_MIN_INK_PIXELS        = 8     
 
 def _sample_ink_lab(img_bgr: np.ndarray, polygon: list) -> tuple[float, float] | None:
-    """
-    Extract the LAB a* and b* colour of the INK inside a word polygon,
-    using Otsu's thresholding to isolate text pixels from the background.
-
-    Pipeline (as discussed):
-      1. Crop the bounding rect of the polygon from the original image.
-      2. Build a polygon mask inside that crop.
-      3. Convert the crop to grayscale and apply Otsu's threshold to
-         separate ink from background — Otsu finds the optimal split
-         between the two dominant intensity clusters automatically.
-      4. Combine the polygon mask and the Otsu ink mask so we only look
-         at pixels that are (a) inside the word region AND (b) identified
-         as ink by Otsu.
-      5. Convert the crop to LAB and use cv2.mean() with the combined mask
-         to get the average LAB colour of the ink pixels only.
-      6. Return (a*, b*) — chromaticity only; L* (luminance) is ignored so
-         that brightness differences between two cameras don't skew results.
-
-    Returns None if the region is outside the image or has too few ink pixels
-    for a reliable reading.
-    """
     h, w = img_bgr.shape[:2]
-
-    # ── Step 1: compute the axis-aligned crop rectangle ──────────────────────
     pts    = np.array(polygon, dtype=np.int32)
     rx, ry, rw, rh = cv2.boundingRect(pts)
-
-    # Clamp to image bounds
     rx  = max(0, rx);  ry  = max(0, ry)
     rw  = min(rw, w - rx);  rh  = min(rh, h - ry)
     if rw < 2 or rh < 2:
         return None
 
     crop = img_bgr[ry:ry+rh, rx:rx+rw].copy()
-
-    # ── Step 2: polygon mask in crop-local coordinates ────────────────────────
     shifted = pts - np.array([rx, ry])
     poly_mask = np.zeros((rh, rw), dtype=np.uint8)
     cv2.fillPoly(poly_mask, [shifted], 255)
 
-    # ── Step 3: Otsu threshold on grayscale crop ──────────────────────────────
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    _, otsu = cv2.threshold(gray, 0, 255,
-                             cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    # THRESH_BINARY_INV makes ink white (255) and background black (0),
-    # which is correct regardless of whether the label is light-on-dark
-    # or dark-on-light — Otsu picks the split automatically.
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # ── Step 4: combined mask — ink pixels inside the polygon only ────────────
     ink_mask = cv2.bitwise_and(poly_mask, otsu)
     ink_count = int(np.count_nonzero(ink_mask))
     if ink_count < _MIN_INK_PIXELS:
-        # Too few ink pixels (tiny / blurry word) — skip to avoid noise
         return None
 
-    # ── Step 5: mean LAB colour of ink pixels via cv2.mean() + mask ──────────
     lab  = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-    means = cv2.mean(lab, mask=ink_mask)   # returns (L*, a*, b*, _)
-
-    # ── Step 6: return chromaticity only ─────────────────────────────────────
-    return float(means[1]), float(means[2])   # a*, b*
+    means = cv2.mean(lab, mask=ink_mask)   
+    return float(means[1]), float(means[2])   
 
 
 def _compute_chroma_calibration(
@@ -476,15 +409,6 @@ def _compute_chroma_calibration(
     ref_raw: np.ndarray,
     user_raw: np.ndarray,
 ) -> tuple[float, float]:
-    """
-    Estimate the global camera-to-camera LAB chromaticity offset by sampling
-    the ink colour of all exact-match word pairs (same text, assumed same ink)
-    and taking the median a* and b* difference.
-
-    Subtracting this offset from per-word comparisons neutralises white-balance
-    and colour-temperature differences between the two cameras, leaving only
-    genuine label colour changes.
-    """
     a_deltas: list[float] = []
     b_deltas: list[float] = []
     for d in diff:
@@ -505,18 +429,6 @@ def _detect_text_color_changes(
     ref_raw: np.ndarray,
     user_raw: np.ndarray,
 ) -> tuple[list[dict], tuple[float, float]]:
-    """
-    Promote 'match' diff entries to 'color_changed' when the ink colour of
-    the matched word differs significantly between the two images.
-
-    Uses Otsu masking (_sample_ink_lab) to measure only ink pixels — not
-    the background — then applies the global camera offset from
-    _compute_chroma_calibration before computing Delta E (Euclidean distance
-    in LAB a*b* space, equivalent to simplified ΔE₇₆ ignoring lightness).
-
-    Also returns the computed chroma offset so _detect_visual_tampering can
-    reuse it without recalculating.
-    """
     a_off, b_off = _compute_chroma_calibration(diff, ref_raw, user_raw)
     result: list[dict] = []
     for d in diff:
@@ -524,7 +436,6 @@ def _detect_text_color_changes(
             rc = _sample_ink_lab(ref_raw,  d["ref"]["polygon"])
             uc = _sample_ink_lab(user_raw, d["user"]["polygon"])
             if rc and uc:
-                # Delta E in a*b* plane after subtracting the camera offset
                 da    = (rc[0] - uc[0]) - a_off
                 db    = (rc[1] - uc[1]) - b_off
                 delta = (da**2 + db**2) ** 0.5
@@ -536,11 +447,9 @@ def _detect_text_color_changes(
     return result, (a_off, b_off)
 
 
-# ── Visual tampering detection (non-text regions) ─────────────────────────────
-
-_MIN_TAMPER_AREA_FRAC = 0.002   # region must be ≥ 0.2% of image area to be reported
-_TAMPER_COLOR_THRESH  = 18.0    # LAB chroma delta to flag a pixel as "different"
-_MIN_KEYPOINTS        = 12      # ORB inliers needed to trust the homography
+_MIN_TAMPER_AREA_FRAC = 0.002   
+_TAMPER_COLOR_THRESH  = 18.0    
+_MIN_KEYPOINTS        = 12      
 
 
 def _detect_visual_tampering(
@@ -549,21 +458,7 @@ def _detect_visual_tampering(
     flagged_ref_boxes: list[dict],
     chroma_offset: tuple[float, float],
 ) -> tuple[list[dict], list[dict], str]:
-    """
-    Detect non-text colour tampering (recoloured graphics, overlaid shapes, etc.).
 
-    Pipeline:
-      1. ORB keypoint matching → RANSAC homography → warp user onto ref canvas
-      2. Subtract LAB a*, b* channels (colour only; luminance ignored so lighting
-         differences between cameras don't produce false positives)
-      3. Apply the global camera chroma offset already computed for text words
-      4. Threshold → morphological close + open → find contours
-      5. Filter regions already covered by text-level diff boxes (no double report)
-      6. Map remaining ref-space boxes back to user-image space via H⁻¹
-
-    Returns (ref_boxes, user_boxes, status_string).
-    status != "ok" signals low confidence — caller should warn rather than flag.
-    """
     ref_gray  = cv2.cvtColor(ref_raw,  cv2.COLOR_BGR2GRAY)
     user_gray = cv2.cvtColor(user_raw, cv2.COLOR_BGR2GRAY)
 
@@ -591,8 +486,7 @@ def _detect_visual_tampering(
     user_h, user_w = user_raw.shape[:2]
     user_aligned   = cv2.warpPerspective(user_raw, H, (ref_w, ref_h))
 
-    # Mask out black pixels introduced by warping (outside source image bounds)
-    valid = (user_aligned[:, :, 0] > 0) |             (user_aligned[:, :, 1] > 0) |             (user_aligned[:, :, 2] > 0)
+    valid = (user_aligned[:, :, 0] > 0) | (user_aligned[:, :, 1] > 0) | (user_aligned[:, :, 2] > 0)
 
     ref_lab  = cv2.cvtColor(ref_raw,      cv2.COLOR_BGR2LAB).astype(np.float32)
     user_lab = cv2.cvtColor(user_aligned, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -612,6 +506,8 @@ def _detect_visual_tampering(
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     min_area  = ref_h * ref_w * _MIN_TAMPER_AREA_FRAC
+    max_area  = ref_h * ref_w * 0.08  # FIX: Ignore areas > 8% (eliminates giant glare boxes)
+
     ref_boxes:  list[dict] = []
     user_boxes: list[dict] = []
 
@@ -621,11 +517,13 @@ def _detect_visual_tampering(
         H_inv = None
 
     for cnt in contours:
-        if cv2.contourArea(cnt) < min_area:
+        area = cv2.contourArea(cnt)
+        # FIX: Check against both min and max area thresholds
+        if area < min_area or area > max_area:
             continue
+            
         x, y, bw, bh = cv2.boundingRect(cnt)
 
-        # Skip if region is already substantially covered by a text diff box
         dominated = False
         for tb in flagged_ref_boxes:
             tx, ty, tw, th = tb["x"], tb["y"], tb["w"], tb["h"]
@@ -639,7 +537,6 @@ def _detect_visual_tampering(
 
         ref_boxes.append({"x": int(x), "y": int(y), "w": int(bw), "h": int(bh)})
 
-        # Map box corners back to user-image space via H⁻¹
         if H_inv is not None:
             corners = np.float32([
                 [x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]
@@ -654,7 +551,6 @@ def _detect_visual_tampering(
             })
 
     return ref_boxes, user_boxes, "ok"
-
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -708,8 +604,6 @@ async def compare(
     modified      = sum(1 for d in diff if d["type"] == "modified")
     color_changed = sum(1 for d in diff if d["type"] == "color_changed")
 
-    # Collect ref bboxes already flagged at word level so visual tampering
-    # detection doesn't double-report those regions.
     flagged_ref_boxes: list[dict] = []
     for d in diff:
         if d["type"] == "removed":
@@ -749,8 +643,6 @@ async def compare(
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "workers_ready": _pool is not None}
-
-
 
 
 if __name__ == "__main__":
