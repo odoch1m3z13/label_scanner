@@ -114,19 +114,26 @@ def _worker_ocr(payload: bytes) -> tuple[list, float, int, int]:
     return results, scale, orig_h, orig_w
 
 
-# =============================================================================
 #  MAIN-PROCESS CODE
-# =============================================================================
 
 _pool: ProcessPoolExecutor | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Modern FastAPI lifespan context manager.
+    """
     global _pool
+
+    log.info("Pre-downloading OCR models so workers don't fight over them...")
+    from paddleocr import PaddleOCR
+    PaddleOCR(lang="en", use_angle_cls=True, show_log=False)
+
     log.info("Starting 2 OCR worker processes (%d threads each)…", _THREADS_PER_WORKER)
     _pool = ProcessPoolExecutor(max_workers=2, initializer=_worker_init)
 
+    # Submit two blank-image jobs to force both workers to spawn and warm up
     loop  = asyncio.get_event_loop()
     blank = cv2.imencode(".png", np.zeros((4, 4, 3), np.uint8))[1].tobytes()
     await asyncio.gather(
@@ -134,7 +141,9 @@ async def lifespan(app: FastAPI):
         loop.run_in_executor(_pool, _worker_ocr, blank),
     )
     log.info("Both OCR workers ready.")
-    yield
+
+    yield 
+
     if _pool:
         _pool.shutdown(wait=False)
 
