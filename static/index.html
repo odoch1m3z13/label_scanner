@@ -237,7 +237,7 @@
   <!-- Header -->
   <header>
     <h1>Label Diff Scanner</h1>
-    <p>Python / EasyOCR / OpenCV — upload two label images to detect text differences</p>
+    <p>Python / PaddleOCR / OpenCV — upload two label images to detect text differences</p>
   </header>
 
   <!-- Status -->
@@ -287,7 +287,7 @@
   <!-- OCR preview (what the backend processed) -->
   <div id="previewSection">
     <div class="card">
-      <div class="card-title">OpenCV Preprocessing Preview — what EasyOCR received</div>
+      <div class="card-title">OpenCV Preprocessing Preview — what PaddleOCR received</div>
       <div class="grid2">
         <div>
           <div class="preview-label">Original — CLAHE + USM sharpened</div>
@@ -309,7 +309,7 @@
 
     <!-- Visual diff -->
     <div class="card" style="margin-bottom:20px">
-      <div class="card-title">Visual Diff — rotated polygon boxes from EasyOCR</div>
+      <div class="card-title">Visual Diff — rotated polygon boxes from PaddleOCR</div>
       <div class="grid2">
         <div class="diff-canvas-wrap">
           <div class="diff-legend">
@@ -438,7 +438,7 @@ function drawImageOnCanvas(canvas, imageSrc) {
 }
 
 /**
- * Draw a rotated polygon box (EasyOCR / PaddleOCR 4-corner format).
+ * Draw a rotated polygon box (PaddleOCR 4-corner format).
  * polygon: [[x,y], [x,y], [x,y], [x,y]] in original image coords.
  * scale:   display_canvas_width / original_image_width
  */
@@ -544,8 +544,8 @@ $('runBtn').addEventListener('click', async () => {
   setStatus('Rendering results…', 'loading', 0.95);
 
   // ── Show preprocessing previews ──
-  $('refPreview').src  = 'data:image/png;base64,' + data.ref_preview;
-  $('userPreview').src = 'data:image/png;base64,' + data.user_preview;
+  $('refPreview').src  = 'data:image/jpeg;base64,' + data.ref_preview;
+  $('userPreview').src = 'data:image/jpeg;base64,' + data.user_preview;
   $('refWordCount').textContent  = data.ref_word_count;
   $('userWordCount').textContent = data.user_word_count;
   $('previewSection').classList.add('show');
@@ -560,9 +560,6 @@ $('runBtn').addEventListener('click', async () => {
   ]);
 
   // ── Draw word-level diff boxes ──
-  // Green on original  = word only in original (missing from scan)
-  // Red on user canvas = word only in scan (not in original)
-  // Red on BOTH        = word changed in place (text modified or colour changed)
   for (const d of data.diff) {
     if (d.type === 'removed') {
       drawPolygon($('refCanvas'),  d.word.polygon, '#22c55e', refScale);
@@ -574,13 +571,9 @@ $('runBtn').addEventListener('click', async () => {
     }
   }
 
-  // ── Draw visual tampering boxes (non-text colour differences) ──
-  // tamper_boxes_ref are in original ref image space (accurate)
-  // tamper_boxes_user are mapped back via H⁻¹ (accurate)
-  if (data.tamper_status === 'ok') {
-    for (const box of (data.tamper_boxes_ref  || [])) drawRect($('refCanvas'),  box, '#22c55e', refScale);
-    for (const box of (data.tamper_boxes_user || [])) drawRect($('userCanvas'), box, '#ef4444', userScale);
-  }
+  // ── Draw visual tampering and white border boxes ──
+  for (const box of (data.tamper_boxes_ref  || [])) drawRect($('refCanvas'),  box, '#22c55e', refScale);
+  for (const box of (data.tamper_boxes_user || [])) drawRect($('userCanvas'), box, '#ef4444', userScale);
 
   // ── Build text diff ──
   let refHtml = '', userHtml = '';
@@ -596,7 +589,6 @@ $('runBtn').addEventListener('click', async () => {
       refHtml  += `<span class="chip-removed">${esc(d.ref.text)}</span> `;
       userHtml += `<span class="chip-added">${esc(d.user.text)}</span> `;
     } else if (d.type === 'color_changed') {
-      // Same text, different colour — show with a colour-change indicator
       refHtml  += `<span class="chip-removed" title="colour changed">${esc(d.ref.text)} 🎨</span> `;
       userHtml += `<span class="chip-added"   title="colour changed">${esc(d.user.text)} 🎨</span> `;
     }
@@ -607,8 +599,9 @@ $('runBtn').addEventListener('click', async () => {
   // ── Summary banner ──
   const banner   = $('summaryBanner');
   const nTamper  = (data.tamper_boxes_ref || []).length;
+  const nWhiteBorders = data.white_border_count || 0;
   const anyDiff  = data.removed_count > 0 || data.added_count > 0 ||
-                   data.modified_count > 0 || data.color_changed_count > 0 || nTamper > 0;
+                   data.modified_count > 0 || data.color_changed_count > 0 || nTamper > 0 || nWhiteBorders > 0;
 
   if (!anyDiff) {
     banner.className   = 'match';
@@ -620,6 +613,7 @@ $('runBtn').addEventListener('click', async () => {
     if (data.removed_count       > 0) parts.push(`${data.removed_count} word(s) missing from scan`);
     if (data.added_count         > 0) parts.push(`${data.added_count} new word(s) in scan`);
     if (nTamper                  > 0) parts.push(`${nTamper} visual tampering region(s)`);
+    if (nWhiteBorders            > 0) parts.push(`${nWhiteBorders} padded border(s) added`);
     banner.className   = 'diff';
     banner.textContent = `⚠  Differences found — ${parts.join(',  ')}`;
   }
@@ -631,7 +625,7 @@ $('runBtn').addEventListener('click', async () => {
     `Done in ${data.ocr_time_s}s  ·  ` +
     `${data.modified_count} changed  ·  ${data.color_changed_count} recoloured  ·  ` +
     `${data.removed_count} removed  ·  ${data.added_count} added  ·  ` +
-    `${nTamper} visual tamper region(s)`,
+    `${nTamper} visual tamper region(s)  ·  ${nWhiteBorders} border(s)`,
     'success', 1.0,
   );
 

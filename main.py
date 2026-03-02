@@ -23,70 +23,50 @@ from fastapi.responses import HTMLResponse
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
-# Skip PaddleOCR's slow connectivity check on every startup
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 # =============================================================================
 #  WORKER-PROCESS CODE
-#  Must be top-level (module scope) so ProcessPoolExecutor can pickle them.
 # =============================================================================
 
-_paddle: object = None   # lives only in worker processes
-
-# Half the logical cores per worker so both workers don't fight for threads
+_paddle: object = None
 _THREADS_PER_WORKER = max(1, (os.cpu_count() or 2) // 2)
 
 
 def _worker_init() -> None:
-    """
-    Runs once when each worker process starts.
-    Loads PaddleOCR into module-global _paddle so it is reused across
-    every request — zero reload cost per scan.
-    """
     global _paddle
-
-    # Tell PaddlePaddle how many threads this worker may use
     os.environ["OMP_NUM_THREADS"]    = str(_THREADS_PER_WORKER)
     os.environ["MKL_NUM_THREADS"]    = str(_THREADS_PER_WORKER)
     os.environ["PADDLE_NUM_THREADS"] = str(_THREADS_PER_WORKER)
     os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
     from paddleocr import PaddleOCR  # noqa: PLC0415
-
-    # PaddleOCR 2.7.x — full kwargs available, stable on CPU
     _paddle = PaddleOCR(
-        use_angle_cls=False,  # FIX: Disabled for 300ms+ speedup per scan
+        use_angle_cls=False,
         lang="en",
         use_gpu=False,
         cpu_threads=_THREADS_PER_WORKER,
         show_log=False,
-        enable_mkldnn=True,   # Intel MKL-DNN — ~30% faster on x86 CPUs
+        enable_mkldnn=True,
     )
-
     logging.getLogger(__name__).info(
         "Worker PID %d: PaddleOCR ready (%d threads)", os.getpid(), _THREADS_PER_WORKER
     )
 
 
 def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
-    """Parse PaddleOCR result defensively across 2.x and 3.x return formats."""
     results: list[tuple[list, str, float]] = []
-
     if raw is None:
         return results
-
     try:
         lines = raw[0]  # type: ignore[index]
     except (TypeError, IndexError, KeyError):
         lines = raw
-
     if lines is None:
         return results
-
     for line in lines:
         if line is None:
             continue
-
         try:
             pts_raw, text_conf = line
             text, conf = text_conf
@@ -95,7 +75,6 @@ def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
             continue
         except (TypeError, ValueError, IndexError):
             pass
-
         try:
             pts  = [[float(p[0]), float(p[1])] for p in line.bbox]   # type: ignore
             text = str(getattr(line, "text", getattr(line, "rec_text", ""))).strip()
@@ -104,15 +83,10 @@ def _parse_paddle_result(raw: object) -> list[tuple[list, str, float]]:
                 results.append((pts, text, conf))
         except AttributeError:
             pass
-
     return results
 
 
 def _worker_ocr(payload: bytes) -> tuple[list, float, int, int]:
-    """
-    Top-level worker function — pickle-safe, runs in a child process.
-    Receives raw image bytes → preprocess → PaddleOCR → normalised result list.
-    """
     arr = np.frombuffer(payload, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -120,33 +94,28 @@ def _worker_ocr(payload: bytes) -> tuple[list, float, int, int]:
 
     orig_h, orig_w = img.shape[:2]
 
-    # ── Preprocess ──────────────────────────────────────────────────────────
-    # FIX: Scale DOWN before applying heavy OpenCV math to save massive CPU cycles
     scale  = 1.0
     target = 1_400
     max_dim = max(orig_h, orig_w)
     if max_dim != target:
-        scale = target / max_dim
+        scale  = target / max_dim
         interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=interp)
+        img    = cv2.resize(img, None, fx=scale, fy=scale, interpolation=interp)
 
     gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     eq    = clahe.apply(gray)
-    
     blur  = cv2.GaussianBlur(eq, (0, 0), 3)
     sharp = cv2.addWeighted(eq, 1.7, blur, -0.7, 0)
     proc  = cv2.cvtColor(sharp, cv2.COLOR_GRAY2BGR)
 
-    # ── OCR ─────────────────────────────────────────────────────────────────
     raw     = _paddle.ocr(proc)  # type: ignore[union-attr]
     results = _parse_paddle_result(raw)
-
     return results, scale, orig_h, orig_w
 
 
 # =============================================================================
-#  MAIN-PROCESS CODE — FastAPI app, image helpers, diff logic
+#  MAIN-PROCESS CODE
 # =============================================================================
 
 _pool: ProcessPoolExecutor | None = None
@@ -165,14 +134,12 @@ async def lifespan(app: FastAPI):
         loop.run_in_executor(_pool, _worker_ocr, blank),
     )
     log.info("Both OCR workers ready.")
-
     yield
-
     if _pool:
         _pool.shutdown(wait=False)
 
 
-app = FastAPI(title="Label Diff Scanner", version="4.0", lifespan=lifespan)
+app = FastAPI(title="Label Diff Scanner", version="4.2", lifespan=lifespan)
 
 
 def _load_image(data: bytes) -> np.ndarray:
@@ -183,13 +150,17 @@ def _load_image(data: bytes) -> np.ndarray:
     return img
 
 
+# ── OPT-3: Preview cap reduced 1400→800 px.
+#    Frontend canvases max at 680 px, so 800 px gives a small headroom buffer
+#    while cutting CLAHE + USM + base64 encode time by ~70 % vs 1400 px.
+_PREVIEW_MAX = 800
+
 def _preprocess_for_preview(img: np.ndarray) -> np.ndarray:
-    # Scale first, then filter (faster)
     h, w = img.shape[:2]
-    if max(h, w) > 1_400:
-        sc = 1_400 / max(h, w)
+    if max(h, w) > _PREVIEW_MAX:
+        sc  = _PREVIEW_MAX / max(h, w)
         img = cv2.resize(img, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
-        
+
     gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     eq    = clahe.apply(gray)
@@ -199,7 +170,6 @@ def _preprocess_for_preview(img: np.ndarray) -> np.ndarray:
 
 
 def _to_b64(img: np.ndarray) -> str:
-    # FIX: Use JPEG instead of PNG for 5x faster network transmission
     _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return base64.b64encode(buf.tobytes()).decode()
 
@@ -210,8 +180,6 @@ def _clean(text: str) -> str:
 
 def _split_token(pts: list, text: str, conf: float, scale: float,
                  orig_h: int, orig_w: int) -> list[dict]:
-                 
-    # FIX: Pad symbols so "OZ(640g)" splits correctly to "OZ" and "640g"
     spaced_text = re.sub(r'([^\w\s])', r' \1 ', text)
     parts = [p for p in spaced_text.strip().split() if _clean(p)]
     if not parts:
@@ -220,8 +188,8 @@ def _split_token(pts: list, text: str, conf: float, scale: float,
     orig_pts = [[p[0] / scale, p[1] / scale] for p in pts]
     xs = [p[0] for p in orig_pts]
     ys = [p[1] for p in orig_pts]
-    x0, y0 = max(0.0, min(xs)), max(0.0, min(ys))
-    x1, y1 = min(float(orig_w), max(xs)), min(float(orig_h), max(ys))
+    x0, y0  = max(0.0, min(xs)), max(0.0, min(ys))
+    x1, y1  = min(float(orig_w), max(xs)), min(float(orig_h), max(ys))
     total_w = x1 - x0
 
     if len(parts) == 1:
@@ -263,11 +231,8 @@ def _ocr_results_to_words(
         if conf < 0.25:
             continue
         words.extend(_split_token(pts, text, conf, scale, orig_h, orig_w))
-        
     if not words:
         return []
-
-    # FIX: Dynamic line height. Fixes the massive "MillDCast & Thyme" box
     median_h = max(10.0, float(np.median([w["bbox"]["h"] for w in words])))
     words.sort(key=lambda w: (int(w["bbox"]["y"] / (median_h * 0.5)), w["bbox"]["x"]))
     return words
@@ -374,8 +339,9 @@ def _smart_diff(wa: list[dict], wb: list[dict],
     return _spatial_second_pass(_fuzzy_lcs_diff(wa, wb), ref_h, user_h)
 
 
-_COLOR_DELTA_THRESHOLD = 15.0  
-_MIN_INK_PIXELS        = 8     
+_COLOR_DELTA_THRESHOLD = 15.0
+_MIN_INK_PIXELS        = 8
+
 
 def _sample_ink_lab(img_bgr: np.ndarray, polygon: list) -> tuple[float, float] | None:
     h, w = img_bgr.shape[:2]
@@ -386,7 +352,7 @@ def _sample_ink_lab(img_bgr: np.ndarray, polygon: list) -> tuple[float, float] |
     if rw < 2 or rh < 2:
         return None
 
-    crop = img_bgr[ry:ry+rh, rx:rx+rw].copy()
+    crop    = img_bgr[ry:ry+rh, rx:rx+rw].copy()
     shifted = pts - np.array([rx, ry])
     poly_mask = np.zeros((rh, rw), dtype=np.uint8)
     cv2.fillPoly(poly_mask, [shifted], 255)
@@ -394,14 +360,14 @@ def _sample_ink_lab(img_bgr: np.ndarray, polygon: list) -> tuple[float, float] |
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    ink_mask = cv2.bitwise_and(poly_mask, otsu)
+    ink_mask  = cv2.bitwise_and(poly_mask, otsu)
     ink_count = int(np.count_nonzero(ink_mask))
     if ink_count < _MIN_INK_PIXELS:
         return None
 
-    lab  = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-    means = cv2.mean(lab, mask=ink_mask)   
-    return float(means[1]), float(means[2])   
+    lab   = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
+    means = cv2.mean(lab, mask=ink_mask)
+    return float(means[1]), float(means[2])
 
 
 def _compute_chroma_calibration(
@@ -447,9 +413,25 @@ def _detect_text_color_changes(
     return result, (a_off, b_off)
 
 
-_MIN_TAMPER_AREA_FRAC = 0.002   
-_TAMPER_COLOR_THRESH  = 18.0    
-_MIN_KEYPOINTS        = 12      
+_MIN_TAMPER_AREA_FRAC = 0.002
+_TAMPER_COLOR_THRESH  = 18.0
+_MIN_KEYPOINTS        = 12
+
+# ── OPT-4: Run the entire tamper pipeline (ORB → homography → warpPerspective
+#    → LAB diff → contours) at this reduced resolution.  A 12 MP image shrinks
+#    from ~4000×3000 to ~1000×750, cutting pixel-level work by ~14× while
+#    preserving every contour that would be visible at 1000 px.
+#    Output bounding boxes are scaled back to full-res coordinates at the end.
+_TAMPER_WORK_SIZE = 1000
+
+
+def _shrink_for_tamper(img: np.ndarray) -> tuple[np.ndarray, float]:
+    """Return (resized_img, scale_factor).  scale_factor < 1 means it was shrunk."""
+    h, w = img.shape[:2]
+    s    = min(1.0, _TAMPER_WORK_SIZE / max(h, w))
+    if s == 1.0:
+        return img, 1.0
+    return cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA), s
 
 
 def _detect_visual_tampering(
@@ -459,12 +441,23 @@ def _detect_visual_tampering(
     chroma_offset: tuple[float, float],
 ) -> tuple[list[dict], list[dict], str]:
 
-    ref_gray  = cv2.cvtColor(ref_raw,  cv2.COLOR_BGR2GRAY)
-    user_gray = cv2.cvtColor(user_raw, cv2.COLOR_BGR2GRAY)
+    ref_h,  ref_w  = ref_raw.shape[:2]
+    user_h, user_w = user_raw.shape[:2]
 
-    orb      = cv2.ORB_create(nfeatures=3000)
-    kp1, d1  = orb.detectAndCompute(ref_gray,  None)
-    kp2, d2  = orb.detectAndCompute(user_gray, None)
+    # ── OPT-4a: Downsample both images to _TAMPER_WORK_SIZE for all pixel work
+    ref_work,  ref_ws  = _shrink_for_tamper(ref_raw)
+    user_work, user_ws = _shrink_for_tamper(user_raw)
+    ref_wh, ref_ww     = ref_work.shape[:2]
+
+    ref_gray  = cv2.cvtColor(ref_work,  cv2.COLOR_BGR2GRAY)
+    user_gray = cv2.cvtColor(user_work, cv2.COLOR_BGR2GRAY)
+
+    # ── OPT-4b: Fewer ORB features proportional to the smaller canvas —
+    #    still plenty to find a good homography, but avoids O(n²) matching cost
+    n_features = max(_MIN_KEYPOINTS * 10, int(1500 * (ref_ww / _TAMPER_WORK_SIZE)))
+    orb        = cv2.ORB_create(nfeatures=n_features)
+    kp1, d1    = orb.detectAndCompute(ref_gray,  None)
+    kp2, d2    = orb.detectAndCompute(user_gray, None)
 
     if d1 is None or d2 is None or len(kp1) < _MIN_KEYPOINTS or len(kp2) < _MIN_KEYPOINTS:
         return [], [], "insufficient_keypoints"
@@ -482,20 +475,23 @@ def _detect_visual_tampering(
     if H is None or hmask is None or int(hmask.ravel().sum()) < _MIN_KEYPOINTS:
         return [], [], "homography_failed"
 
-    ref_h, ref_w   = ref_raw.shape[:2]
-    user_h, user_w = user_raw.shape[:2]
-    user_aligned   = cv2.warpPerspective(user_raw, H, (ref_w, ref_h))
+    # warpPerspective + LAB diff at work resolution (not full-res)
+    user_aligned = cv2.warpPerspective(user_work, H, (ref_ww, ref_wh))
 
-    valid = (user_aligned[:, :, 0] > 0) | (user_aligned[:, :, 1] > 0) | (user_aligned[:, :, 2] > 0)
+    # ── OPT-5: Replace the 3-channel NumPy boolean OR with a single grayscale
+    #    threshold — one C++ call instead of three large temporary bool arrays
+    user_gray_aligned = cv2.cvtColor(user_aligned, cv2.COLOR_BGR2GRAY)
+    _, valid_u8 = cv2.threshold(user_gray_aligned, 0, 255, cv2.THRESH_BINARY)
+    valid = valid_u8.astype(bool)
 
-    ref_lab  = cv2.cvtColor(ref_raw,      cv2.COLOR_BGR2LAB).astype(np.float32)
+    ref_lab  = cv2.cvtColor(ref_work,    cv2.COLOR_BGR2LAB).astype(np.float32)
     user_lab = cv2.cvtColor(user_aligned, cv2.COLOR_BGR2LAB).astype(np.float32)
 
     a_off, b_off = chroma_offset
     diff_a = (ref_lab[:, :, 1] - user_lab[:, :, 1]) - a_off
     diff_b = (ref_lab[:, :, 2] - user_lab[:, :, 2]) - b_off
-    chroma_diff          = np.sqrt(diff_a**2 + diff_b**2)
-    chroma_diff[~valid]  = 0.0
+    chroma_diff         = np.sqrt(diff_a**2 + diff_b**2)
+    chroma_diff[~valid] = 0.0
 
     binary = (chroma_diff > _TAMPER_COLOR_THRESH).astype(np.uint8) * 255
     kclose = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 20))
@@ -505,8 +501,20 @@ def _detect_visual_tampering(
 
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    min_area  = ref_h * ref_w * _MIN_TAMPER_AREA_FRAC
-    max_area  = ref_h * ref_w * 0.08  # FIX: Ignore areas > 8% (eliminates giant glare boxes)
+    # Area thresholds in work-resolution pixels
+    min_area = ref_wh * ref_ww * _MIN_TAMPER_AREA_FRAC
+    max_area = ref_wh * ref_ww * 0.08
+
+    # Factors to map work-res boxes → full-res boxes
+    x_up = ref_w / ref_ww
+    y_up = ref_h / ref_wh
+
+    # flagged_ref_boxes are in full-res — scale them down for dominated check
+    flagged_work = [
+        {"x": int(b["x"] * ref_ws), "y": int(b["y"] * ref_ws),
+         "w": int(b["w"] * ref_ws), "h": int(b["h"] * ref_ws)}
+        for b in flagged_ref_boxes
+    ]
 
     ref_boxes:  list[dict] = []
     user_boxes: list[dict] = []
@@ -518,14 +526,13 @@ def _detect_visual_tampering(
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        # FIX: Check against both min and max area thresholds
         if area < min_area or area > max_area:
             continue
-            
+
         x, y, bw, bh = cv2.boundingRect(cnt)
 
         dominated = False
-        for tb in flagged_ref_boxes:
+        for tb in flagged_work:
             tx, ty, tw, th = tb["x"], tb["y"], tb["w"], tb["h"]
             ix = max(0, min(x + bw, tx + tw) - max(x, tx))
             iy = max(0, min(y + bh, ty + th) - max(y, ty))
@@ -535,15 +542,23 @@ def _detect_visual_tampering(
         if dominated:
             continue
 
-        ref_boxes.append({"x": int(x), "y": int(y), "w": int(bw), "h": int(bh)})
+        # Scale contour box back to full-res ref coordinates
+        ref_boxes.append({
+            "x": int(x * x_up), "y": int(y * y_up),
+            "w": int(bw * x_up), "h": int(bh * y_up),
+        })
 
         if H_inv is not None:
+            # Map corners: work-res ref → work-res user → full-res user
             corners = np.float32([
                 [x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]
             ]).reshape(-1, 1, 2)
             mapped = cv2.perspectiveTransform(corners, H_inv).reshape(-1, 2)
-            uxs = np.clip(mapped[:, 0], 0, user_w)
-            uys = np.clip(mapped[:, 1], 0, user_h)
+            # H_inv is in work-res user space; scale up to full-res user space
+            u_x_up = user_w / (user_w * user_ws)  # = 1 / user_ws
+            u_y_up = user_h / (user_h * user_ws)
+            uxs = np.clip(mapped[:, 0] / user_ws, 0, user_w)
+            uys = np.clip(mapped[:, 1] / user_ws, 0, user_h)
             user_boxes.append({
                 "x": int(uxs.min()), "y": int(uys.min()),
                 "w": int(uxs.max() - uxs.min()),
@@ -551,6 +566,176 @@ def _detect_visual_tampering(
             })
 
     return ref_boxes, user_boxes, "ok"
+
+
+# =============================================================================
+#  WHITE BORDER DELTA DETECTION
+#
+#  Only flags white padding that exists on the scanned image but NOT on the
+#  reference, preventing false positives when both images share the same framing.
+#  Three gates must all pass before an edge is flagged:
+#    1. scan has ≥ _MIN_BORDER_DELTA px more padding than ref (normalised)
+#    2. the strip is ≥ _BORDER_UNIFORMITY fraction pure-white pixels
+#    3. the strip is ≥ _MIN_BORDER_FRAC of the image dimension (no JPEG fringe)
+# =============================================================================
+
+_WHITE_THRESHOLD   = 240
+_MIN_BORDER_DELTA  = 20
+_BORDER_UNIFORMITY = 0.85
+_MIN_BORDER_FRAC   = 0.02
+
+# ── OPT-2: Content-bounds thumbnail size.
+#    We only need to locate a solid white block — 1000 px is more than enough.
+_BOUNDS_THUMB = 1000
+
+
+def _content_bounds(img_bgr: np.ndarray) -> tuple[int, int, int, int] | None:
+    """
+    Returns (x, y, w, h) in original pixel coordinates of all non-white content.
+    Returns None if the image is entirely white.
+
+    OPT-1 (cv2.inRange): C++ SIMD path replaces slow NumPy boolean masking.
+    OPT-2 (thumbnail):   Downsamples to _BOUNDS_THUMB before finding bounds;
+                          result is scaled back to original coords.
+    """
+    orig_h, orig_w = img_bgr.shape[:2]
+    s = min(1.0, _BOUNDS_THUMB / max(orig_h, orig_w))
+
+    if s < 1.0:
+        thumb = cv2.resize(img_bgr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    else:
+        thumb = img_bgr
+
+    # ── OPT-1: cv2.inRange is a single C++ SIMD call — no temporary arrays
+    lo   = np.array([_WHITE_THRESHOLD + 1, _WHITE_THRESHOLD + 1, _WHITE_THRESHOLD + 1], dtype=np.uint8)
+    hi   = np.array([255, 255, 255], dtype=np.uint8)
+    # content_mask is 255 where ALL channels are above threshold (i.e. white),
+    # then we invert: we want 255 where the pixel is NOT white
+    white_mask   = cv2.inRange(thumb, lo, hi)           # 255 = white pixel
+    content_mask = cv2.bitwise_not(white_mask)           # 255 = non-white pixel
+
+    coords = cv2.findNonZero(content_mask)
+    if coords is None:
+        return None
+
+    x, y, w, h = cv2.boundingRect(coords)
+
+    # Scale bounding box back to original-image coordinates
+    if s < 1.0:
+        inv = 1.0 / s
+        x = int(x * inv);  y = int(y * inv)
+        w = int(w * inv);  h = int(h * inv)
+        # Clamp to image bounds after upscaling
+        x = min(x, orig_w - 1);  y = min(y, orig_h - 1)
+        w = min(w, orig_w - x);  h = min(h, orig_h - y)
+
+    return x, y, w, h
+
+
+def _measure_border_uniformity(
+    img_bgr: np.ndarray,
+    side: str,
+    thickness: int,
+) -> float:
+    """
+    Returns the fraction of pixels in the given edge strip that are white.
+
+    OPT-1 (cv2.inRange + cv2.countNonZero): avoids three NumPy boolean arrays
+    and their intermediate allocations.
+    """
+    h, w = img_bgr.shape[:2]
+    if thickness <= 0:
+        return 1.0
+
+    if   side == "left":   strip = img_bgr[:, :thickness]
+    elif side == "right":  strip = img_bgr[:, w - thickness:]
+    elif side == "top":    strip = img_bgr[:thickness, :]
+    else:                  strip = img_bgr[h - thickness:, :]
+
+    total = strip.shape[0] * strip.shape[1]
+    if total == 0:
+        return 1.0
+
+    # ── OPT-1: cv2.inRange + countNonZero — single C++ pass, no temp arrays
+    lo        = np.array([_WHITE_THRESHOLD + 1, _WHITE_THRESHOLD + 1, _WHITE_THRESHOLD + 1], dtype=np.uint8)
+    hi        = np.array([255, 255, 255], dtype=np.uint8)
+    white_mask = cv2.inRange(strip, lo, hi)
+    white_px  = cv2.countNonZero(white_mask)
+    return white_px / total
+
+
+def _detect_white_border_delta(
+    ref_bgr: np.ndarray,
+    user_bgr: np.ndarray,
+) -> list[dict]:
+    """
+    Returns tamper boxes (in scanned-image coords) for edges where the scan
+    has significantly more white padding than the reference.
+    Returns [] when both images share the same framing — zero false positives.
+    """
+    ref_bounds  = _content_bounds(ref_bgr)
+    user_bounds = _content_bounds(user_bgr)
+
+    if user_bounds is None:
+        uh, uw = user_bgr.shape[:2]
+        log.warning("Scanned image appears entirely white — flagging whole canvas.")
+        return [{"x": 0, "y": 0, "w": uw, "h": uh}]
+
+    ref_h,  ref_w  = ref_bgr.shape[:2]
+    user_h, user_w = user_bgr.shape[:2]
+
+    ux, uy, uw, uh = user_bounds
+    user_pad = {
+        "left":   ux,
+        "right":  user_w - (ux + uw),
+        "top":    uy,
+        "bottom": user_h - (uy + uh),
+    }
+
+    if ref_bounds is None:
+        ref_pad_norm = {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+    else:
+        rx, ry, rw, rh = ref_bounds
+        w_ratio = user_w / ref_w if ref_w > 0 else 1.0
+        h_ratio = user_h / ref_h if ref_h > 0 else 1.0
+        ref_pad_norm = {
+            "left":   rx                  * w_ratio,
+            "right":  (ref_w - (rx + rw)) * w_ratio,
+            "top":    ry                  * h_ratio,
+            "bottom": (ref_h - (ry + rh)) * h_ratio,
+        }
+
+    boxes: list[dict] = []
+
+    for side in ("left", "right", "top", "bottom"):
+        user_px = user_pad[side]
+        extra   = user_px - ref_pad_norm[side]
+
+        if extra < _MIN_BORDER_DELTA:
+            continue
+
+        thickness = int(user_px)
+        dim       = user_w if side in ("left", "right") else user_h
+
+        if thickness / dim < _MIN_BORDER_FRAC:
+            continue
+
+        uniformity = _measure_border_uniformity(user_bgr, side, thickness)
+        if uniformity < _BORDER_UNIFORMITY:
+            continue
+
+        log.info(
+            "White border flagged — %s: +%.0f px extra (ref_norm=%.0f, "
+            "scan=%.0f, %.0f%% white)",
+            side, extra, ref_pad_norm[side], user_px, uniformity * 100,
+        )
+
+        if   side == "left":   boxes.append({"x": 0,               "y": 0,               "w": thickness, "h": user_h})
+        elif side == "right":  boxes.append({"x": user_w-thickness, "y": 0,               "w": thickness, "h": user_h})
+        elif side == "top":    boxes.append({"x": 0,               "y": 0,               "w": user_w,    "h": thickness})
+        else:                  boxes.append({"x": 0,               "y": user_h-thickness, "w": user_w,    "h": thickness})
+
+    return boxes
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -615,10 +800,27 @@ async def compare(
         ref_raw, user_raw, flagged_ref_boxes, chroma_off
     )
 
+    white_border_boxes = _detect_white_border_delta(ref_raw, user_raw)
+    if white_border_boxes:
+        log.info("White border delta: %d edge(s) flagged", len(white_border_boxes))
+    tamper_user = tamper_user + white_border_boxes
+
     log.info(
         "Diff — %d modified  %d removed  %d added  %d color_changed  "
-        "%d tamper_regions  (tamper_status=%s)",
-        modified, removed, added, color_changed, len(tamper_ref), tamper_status,
+        "%d tamper_regions  %d white_border_edges  (tamper_status=%s)",
+        modified, removed, added, color_changed,
+        len(tamper_ref), len(white_border_boxes), tamper_status,
+    )
+
+    # ── OPT-6: Build both preview images concurrently in the thread pool
+    #    instead of running them back-to-back in the async event loop.
+    #    CLAHE + USM on even an 800 px image is still CPU-bound work.
+    def _make_preview(img: np.ndarray) -> str:
+        return _to_b64(_preprocess_for_preview(img))
+
+    ref_preview_fut, user_preview_fut = await asyncio.gather(
+        loop.run_in_executor(None, _make_preview, ref_raw),
+        loop.run_in_executor(None, _make_preview, user_raw),
     )
 
     return {
@@ -632,11 +834,12 @@ async def compare(
         "tamper_boxes_ref":    tamper_ref,
         "tamper_boxes_user":   tamper_user,
         "tamper_status":       tamper_status,
+        "white_border_count":  len(white_border_boxes),
         "ocr_time_s":          round(elapsed, 2),
         "ref_size":            {"w": int(ref_w),  "h": int(ref_h)},
         "user_size":           {"w": int(user_w), "h": int(user_h)},
-        "ref_preview":         _to_b64(_preprocess_for_preview(ref_raw)),
-        "user_preview":        _to_b64(_preprocess_for_preview(user_raw)),
+        "ref_preview":         ref_preview_fut,
+        "user_preview":        user_preview_fut,
     }
 
 
@@ -648,6 +851,5 @@ async def health() -> dict:
 if __name__ == "__main__":
     import multiprocessing
     import uvicorn
-    # "spawn" avoids fork-safety issues with Paddle's C++ runtime
     multiprocessing.set_start_method("spawn", force=True)
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
