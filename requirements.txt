@@ -1,8 +1,27 @@
-fastapi>=0.110.0
+# Label Diff Scanner v5.0 — Python dependencies
+#
+# Install: pip install -r requirements.txt
+#
+# Cloud Vision requires a Google service account key:
+#   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+#
+# Storage requires running Redis and Postgres instances:
+#   export REDIS_URL=redis://localhost:6379/0
+#   export POSTGRES_DSN=postgresql://user:pass@localhost/labelscanner
+
+fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
-python-multipart>=0.0.9
-paddlepaddle==2.6.2
-paddleocr==2.7.3
-opencv-python-headless>=4.9.0.80
-numpy>=1.26.0,<2.0.0
-setuptools
+python-multipart>=0.0.9        # required for FastAPI File/Form uploads
+
+pydantic>=2.7.0
+
+opencv-python>=4.9.0           # ORB, HOG, pixel diff, SSIM
+numpy>=1.26.0
+
+google-cloud-vision>=3.7.0
+
+aioredis>=2.0.1                # async Redis client
+asyncpg>=0.29.0                # async Postgres client
+
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
