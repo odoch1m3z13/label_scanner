@@ -32,7 +32,7 @@ Serialisation:
   helper re-serialises the dict to a JSON string before passing to _from_json()
   so the same deserialisation path is used for both Redis and Postgres.
 
-All functions are async (aioredis + asyncpg).
+All functions are async (redis.asyncio + asyncpg).
 Connection pools are module-level singletons set by init() during FastAPI
 lifespan startup and torn down by close() during shutdown.
 """
@@ -121,12 +121,16 @@ async def init(redis_url: str, postgres_dsn: str) -> None:
     Creates the labels table if it does not already exist.
 
     Args:
-        redis_url:    e.g. "redis://localhost:6379/0"
-        postgres_dsn: e.g. "postgresql://user:pass@localhost/labelscanner"
+        redis_url:    Local:    "redis://localhost:6379/0"
+                      Upstash:  "rediss://default:<pw>@<host>.upstash.io:6379"
+                      (redis.asyncio handles TLS automatically from the rediss:// scheme)
+        postgres_dsn: Local:    "postgresql://user:pass@localhost/labelscanner"
+                      Supabase: "postgresql://postgres:<pw>@db.<ref>.supabase.co:5432/postgres"
+                      (use port 5432 direct, NOT the Supabase pooler on port 6543)
     """
     global _redis, _pg_pool
 
-    import aioredis
+    import redis.asyncio as aioredis
     import asyncpg
 
     _redis = await aioredis.from_url(
@@ -171,7 +175,7 @@ async def close() -> None:
 
     if _redis is not None:
         try:
-            await _redis.close()
+            await _redis.aclose()
         except Exception:
             log.exception("Error closing Redis connection.")
         _redis = None
