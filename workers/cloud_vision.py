@@ -49,16 +49,36 @@ def _get_client() -> vision.ImageAnnotatorClient:
     """
     Return (or lazily initialise) the Cloud Vision ImageAnnotatorClient.
 
-    The client reads credentials from:
-      1. GOOGLE_APPLICATION_CREDENTIALS env var (service account JSON path).
-      2. Application Default Credentials (gcloud auth application-default login).
+    Credential resolution order:
+      1. GOOGLE_APPLICATION_CREDENTIALS_JSON env var — full service account JSON
+         as a string. Used on hosted platforms (Render, Railway, Cloud Run) where
+         there is no persistent filesystem to store a key file.
+      2. GOOGLE_APPLICATION_CREDENTIALS env var — path to a service account JSON
+         file. Used for local development.
+      3. Application Default Credentials (gcloud auth application-default login).
 
-    Raises google.auth.exceptions.DefaultCredentialsError if neither is set.
+    Raises google.auth.exceptions.DefaultCredentialsError if none are found.
     """
     global _cv_client
     if _cv_client is None:
-        _cv_client = vision.ImageAnnotatorClient()
-        log.info("Cloud Vision client initialised.")
+        import json
+        import os
+        from google.oauth2 import service_account
+
+        json_str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        if json_str:
+            # Hosted platform path: credentials stored as env var JSON string
+            info = json.loads(json_str)
+            creds = service_account.Credentials.from_service_account_info(
+                info,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            _cv_client = vision.ImageAnnotatorClient(credentials=creds)
+            log.info("Cloud Vision client initialised from GOOGLE_APPLICATION_CREDENTIALS_JSON.")
+        else:
+            # Local path: file path or ADC
+            _cv_client = vision.ImageAnnotatorClient()
+            log.info("Cloud Vision client initialised from file credentials / ADC.")
     return _cv_client
 
 
