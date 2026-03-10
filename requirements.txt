@@ -1,27 +1,89 @@
 # Label Diff Scanner v5.0 — Python dependencies
 #
-# Install: pip install -r requirements.txt
+# Python >= 3.11 required:
+#   - `X | Y` union type syntax (PEP 604) used throughout models and pipeline
+#   - `asynccontextmanager` lifespan pattern requires 3.10+
+#   - `asyncio.get_event_loop()` behaviour stable from 3.10+
 #
-# Cloud Vision requires a Google service account key:
-#   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+# Setup:
+#   pip install -r requirements.txt
 #
-# Storage requires running Redis and Postgres instances:
-#   export REDIS_URL=redis://localhost:6379/0
-#   export POSTGRES_DSN=postgresql://user:pass@localhost/labelscanner
+# Environment variables:
+#   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service_account.json
+#   REDIS_URL=redis://localhost:6379/0
+#   POSTGRES_DSN=postgresql://user:pass@localhost/labelscanner
 
+# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.111.0
+    # 0.93 introduced the `lifespan=` parameter used in main.py.
+    # 0.111 added full Pydantic v2 compatibility in response_model handling.
 uvicorn[standard]>=0.29.0
-python-multipart>=0.0.9        # required for FastAPI File/Form uploads
+    # [standard] pulls in httptools + uvloop for production throughput.
+    # websockets included but unused — no cost, avoids later surprises.
+python-multipart>=0.0.9
+    # FastAPI does NOT install this automatically.
+    # Required for any endpoint that uses File() or Form() — both /register
+    # and /compare use multipart uploads.
 
+# ── Data validation ───────────────────────────────────────────────────────────
 pydantic>=2.7.0
+    # v2 API used: model_dump_json(), model_validate_json().
+    # semantic_cache.py has a try/except AttributeError fallback for v1
+    # compatibility, but v2 is the target and v1 is not tested.
 
-opencv-python>=4.9.0           # ORB, HOG, pixel diff, SSIM
+# ── Computer vision ───────────────────────────────────────────────────────────
+opencv-python-headless>=4.9.0
+    # NOTE: requires two system libraries not managed by pip:
+    #   sudo apt-get install -y libgl1 libglib2.0-0
+    # In Codespaces this is handled automatically by .devcontainer/devcontainer.json.
+    # On a plain Ubuntu server run the apt-get line once before pip install.
+    # Headless variant omits GUI/display modules (cv2.imshow etc.).
+    # No GUI calls exist anywhere in the codebase — headless is the correct
+    # choice for a server environment and avoids pulling in libGL/libGTK.
+    # Do NOT install alongside opencv-python (they conflict on import).
+    #
+    # Used for:
+    #   align.py    — ORB_create, BFMatcher, findHomography, warpPerspective
+    #   barcode.py  — HOGDescriptor, Sobel, dilate
+    #   border.py   — resize, threshold
+    #   colour.py   — cvtColor (BGR→LAB), threshold (Otsu)
+    #   tamper.py   — morphologyEx, findContours, absdiff, bitwise_or
+    #   main.py     — imdecode, imencode (JPEG preview encoding)
 numpy>=1.26.0
+    # 1.26 is the last series before the NumPy 2.0 ABI break.
+    # Pin to <2.0 if your opencv-python-headless wheel predates NumPy 2.x.
+    # numpy>=2.0 requires opencv>=4.10 (not yet widely available as a wheel).
 
+# ── Google Cloud Vision ───────────────────────────────────────────────────────
 google-cloud-vision>=3.7.0
+    # Provides google.cloud.vision (client) and google.cloud.vision_v1
+    # (AnnotateImageResponse type used in cloud_vision.py).
+    # Transitively installs: google-auth, grpcio, protobuf, googleapis-common-protos.
+    # No need to pin protobuf separately — google-cloud-vision manages the
+    # protobuf version constraint via its own dependency resolver.
 
-aioredis>=2.0.1                # async Redis client
-asyncpg>=0.29.0                # async Postgres client
+# ── Storage ───────────────────────────────────────────────────────────────────
+redis[asyncio]>=5.0.0
+    # The official Redis client with async support (redis.asyncio).
+    # Replaces aioredis which is unmaintained and broken on Python 3.12
+    # (duplicate base class TimeoutError crash).
+    # API used: redis.asyncio.from_url(..., decode_responses=True)
+    # with the standard async get/set/delete/exists/aclose interface.
+asyncpg>=0.29.0
+    # Used for: create_pool, conn.fetchrow, conn.fetch, conn.fetchval,
+    # conn.execute, and `async with conn.transaction()`.
+    # The transaction() context manager API has been stable since 0.18.
+    # 0.29 is the current stable series with Python 3.12 support.
 
+# ── Environment ──────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+    # Loads .env into os.environ at startup (see main.py).
+    # No-op when variables are already set in the host environment, so safe
+    # to include in production builds.
+
+# ── Testing ───────────────────────────────────────────────────────────────────
 pytest>=8.2.0
-pytest-asyncio>=0.23.0
+    # All tests use asyncio.run() directly rather than async def test_ functions,
+    # so pytest-asyncio is NOT required.
+    # Tests stub out cv2, pydantic, and google libraries — no additional
+    # test-only packages needed.

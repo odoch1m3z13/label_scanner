@@ -35,6 +35,15 @@ Reference image storage:
 """
 from __future__ import annotations
 
+# Load .env before anything else reads os.environ.
+# python-dotenv is a dev convenience — on a real server these vars come from
+# the host environment and load_dotenv() is a no-op when they are already set.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass   # python-dotenv not installed — rely on shell environment
+
 import asyncio
 import base64
 import logging
@@ -435,6 +444,164 @@ async def compare(
         log.exception("record_scan failed for label_id=%s — scan result still returned.", label_id)
 
     # ── Assemble response ──────────────────────────────────────────────────────
+    return CompareResponse(
+        removed_count=counts[DiffType.removed],
+        added_count=counts[DiffType.added],
+        modified_count=counts[DiffType.modified],
+        color_changed_count=counts[DiffType.color_changed],
+        unmatched_run_count=counts[DiffType.unmatched_run],
+        tamper_count_ref=len(tamper_ref),
+        tamper_count_user=len(tamper_user),
+        white_border_count=white_border_count,
+        pp_figure_count=pp_figure_count,
+        diff=diff_result,
+        tamper_boxes_ref=tamper_ref,
+        tamper_boxes_user=tamper_user,
+        alignment=alignment,
+        ref_size={"w": ref_w, "h": ref_h},
+        user_size={"w": user_w, "h": user_h},
+        ref_word_count=len(ref_map.words),
+        user_word_count=len(user_map.words),
+        phase1_time_s=round(t_phase1, 2),
+        phase2_time_s=round(t_phase2, 2),
+        total_time_s=round(total_time, 2),
+        ref_preview=_to_b64_preview(ref_img),
+        user_preview=_to_b64_preview(user_img),
+    )
+
+
+@app.post("/scan", response_model=CompareResponse)
+async def scan(
+    ref_image:  UploadFile = File(..., description="Master/original reference label (JPEG/PNG/WEBP)"),
+    user_image: UploadFile = File(..., description="Scanned/modified label to check (JPEG/PNG/WEBP)"),
+) -> CompareResponse:
+    """
+    Single-step convenience endpoint for the frontend.
+
+    Accepts both images in one multipart POST, auto-derives a label_id from
+    an MD5 hash of the reference image bytes, registers the reference if it
+    has not been seen before (or re-uses the cached SemanticMap if it has),
+    then runs the full compare pipeline and returns a CompareResponse.
+
+    label_id derivation:
+      label_id = "scan_" + md5(ref_bytes).hexdigest()[:16]
+      The same reference image always maps to the same label_id, so repeated
+      scans against the same master hit the Redis cache instead of calling
+      Cloud Vision again.
+    """
+    import hashlib
+    _require_storage()
+
+    ref_bytes  = await ref_image.read()
+    user_bytes = await user_image.read()
+
+    if not ref_bytes:
+        raise HTTPException(400, "ref_image: empty file.")
+    if not user_bytes:
+        raise HTTPException(400, "user_image: empty file.")
+
+    # Derive a stable label_id from the reference image content
+    label_id = "scan_" + hashlib.md5(ref_bytes).hexdigest()[:16]
+
+    # Register the reference if not already cached
+    if not await cache.exists(label_id):
+        log.info("/scan: label_id=%s not in cache — registering ref image.", label_id)
+        try:
+            semantic_map = await cloud_vision.extract(ref_bytes, label_id)
+        except ValueError as exc:
+            raise HTTPException(400, f"Cloud Vision rejected ref_image: {exc}") from exc
+        except Exception as exc:
+            log.exception("/scan: Cloud Vision failed for ref image.")
+            raise HTTPException(502, f"Cloud Vision error: {exc}") from exc
+
+        await cache.set(semantic_map)
+        await registry.register_label(label_id, len(semantic_map.words), len(semantic_map.regions))
+        await registry.store_ref_image(label_id, ref_bytes)
+    else:
+        log.info("/scan: label_id=%s found in cache — skipping re-registration.", label_id)
+
+    # Delegate to the full compare pipeline via an internal UploadFile-like shim
+    # by calling the shared logic directly rather than duplicating it.
+    # We construct a minimal UploadFile wrapper around the already-read bytes.
+    from fastapi import UploadFile as _UF
+    from io import BytesIO
+    from starlette.datastructures import UploadFile as _StarletteUF
+
+    user_upload = _StarletteUF(file=BytesIO(user_bytes), filename=user_image.filename or "scan.jpg")
+
+    # Build a fake request context by calling compare's body directly
+    # rather than going through HTTP again — avoids double-parsing.
+    loop    = asyncio.get_event_loop()
+    t_start = loop.time()
+
+    ref_map   = await cache.get(label_id)
+    ref_bytes_stored = await registry.get_ref_image(label_id)
+
+    if ref_map is None or ref_bytes_stored is None:
+        raise HTTPException(500, "Registration succeeded but retrieval failed — please retry.")
+
+    ref_img  = _load_image(ref_bytes_stored, "ref_image")
+    user_img = _load_image(user_bytes,       "user_image")
+    ref_h,  ref_w  = ref_img.shape[:2]
+    user_h, user_w = user_img.shape[:2]
+
+    cv_task    = cloud_vision.extract(user_bytes, label_id + ":scan")
+    align_task = loop.run_in_executor(None, align.compute_homography, ref_img, user_img)
+    user_map, alignment = await asyncio.gather(cv_task, align_task)
+
+    t_after_phase1 = loop.time()
+    t_phase1       = t_after_phase1 - t_start
+
+    if alignment.status == "ok" and alignment.H_inv is not None:
+        user_words_proj = align.project_words(user_map.words, alignment.H_inv, clip_w=ref_w, clip_h=ref_h)
+    else:
+        user_words_proj = user_map.words
+
+    diff_task = loop.run_in_executor(
+        None, diff.run,
+        ref_map.words, user_words_proj,
+        ref_h, ref_w, user_h, user_w,
+    )
+    tamper_task = loop.run_in_executor(
+        None, tamper.run,
+        ref_img, user_img, alignment.H, alignment.H_inv, ref_map, alignment.inlier_ratio,
+    )
+    diff_result, tamper_pair = await asyncio.gather(diff_task, tamper_task)
+    tamper_ref, tamper_user  = tamper_pair
+
+    t_phase2 = loop.time() - t_after_phase1
+
+    diff_result, _ = colour.detect_color_changes(diff_result, ref_img, user_img, alignment.inlier_ratio)
+
+    bc_ref, bc_user = barcode.run(ref_img, user_img, alignment.H, alignment.H_inv)
+    tamper_ref  = tamper_ref  + bc_ref
+    tamper_user = tamper_user + bc_user
+
+    fig_ref, fig_user = layout.run(
+        ref_map.regions, user_map.regions,
+        ref_h, ref_w, user_h, user_w, alignment.H_inv,
+    )
+    tamper_ref  = tamper_ref  + fig_ref
+    tamper_user = tamper_user + fig_user
+
+    border_boxes = border.run(ref_img, user_img)
+    tamper_user  = tamper_user + border_boxes
+
+    counts = _count_diff(diff_result)
+    white_border_count = sum(1 for tb in tamper_user if tb.source == TamperSource.white_border)
+    pp_figure_count    = sum(1 for tb in (tamper_ref + tamper_user) if tb.source == TamperSource.layout)
+    total_time = loop.time() - t_start
+
+    try:
+        await registry.record_scan(
+            label_id=label_id,
+            scan_id=str(uuid.uuid4()),
+            tamper_detected=bool(tamper_ref or tamper_user),
+            diff_counts={k.value: v for k, v in counts.items()},
+        )
+    except Exception:
+        log.exception("record_scan failed for label_id=%s.", label_id)
+
     return CompareResponse(
         removed_count=counts[DiffType.removed],
         added_count=counts[DiffType.added],

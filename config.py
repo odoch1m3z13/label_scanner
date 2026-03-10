@@ -36,7 +36,7 @@ MIN_BBOX_H_FOR_COLOR:               int   = 15
 
 # ── Visual tamper  (pipeline/tamper.py) ──────────────────────────────────────
 MIN_TAMPER_AREA_FRAC:   float = 0.004
-MAX_TAMPER_AREA_FRAC:   float = 0.35
+MAX_TAMPER_AREA_FRAC:   float = 0.20  # boxes > 20% of image area are background shifts, not discrete tamper zones
 TAMPER_COLOR_THRESH:    float = 18.0
 GRAPHIC_CELL_FRAC:      float = 0.08
 GRAPHIC_DIFF_THRESH:    float = 0.18

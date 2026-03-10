@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Label Diff Scanner | Compliance Dashboard</title>
   <style>
-    /* ─── Reset & Base ────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
@@ -38,7 +37,6 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    /* ─── Layout ──────────────────────────────────────────────────────────────── */
     .wrap { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 24px; }
 
     .card {
@@ -46,7 +44,7 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 24px;
-      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
     }
 
     .card-title {
@@ -64,17 +62,15 @@
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
     @media (max-width: 768px) { .grid2 { grid-template-columns: 1fr; } }
 
-    /* ─── Header ──────────────────────────────────────────────────────────────── */
     header { text-align: center; padding: 16px 0; }
     header h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; color: #fff; }
     header p  { color: var(--muted); margin-top: 8px; font-size: 14px; }
 
-    /* ─── Status bar ──────────────────────────────────────────────────────────── */
     #statusBar {
       display: none;
       align-items: center;
       gap: 16px;
-      background: rgba(26, 32, 47, 0.8);
+      background: rgba(26,32,47,0.8);
       backdrop-filter: blur(8px);
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -104,7 +100,6 @@
       transition: width 0.3s ease;
     }
 
-    /* ─── Upload zones ────────────────────────────────────────────────────────── */
     .upload-label { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 10px; display: block; }
 
     .drop-zone {
@@ -125,7 +120,7 @@
     }
     .drop-zone:hover, .drop-zone.drag-over {
       border-color: var(--accent);
-      background: rgba(79, 70, 229, 0.05);
+      background: rgba(79,70,229,0.05);
     }
     .drop-zone input[type=file] {
       position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
@@ -140,7 +135,6 @@
       box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
 
-    /* ─── Scan button ─────────────────────────────────────────────────────────── */
     #runBtn {
       width: 100%;
       padding: 14px;
@@ -153,12 +147,11 @@
       cursor: pointer;
       transition: all 0.2s ease;
       margin-top: 8px;
-      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+      box-shadow: 0 4px 12px rgba(79,70,229,0.3);
     }
     #runBtn:hover:not(:disabled) { background: var(--accent-h); transform: translateY(-1px); }
     #runBtn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; transform: none; }
 
-    /* ─── OCR preview ─────────────────────────────────────────────────────────── */
     #previewSection { display: none; }
     #previewSection.show { display: block; }
 
@@ -166,19 +159,13 @@
       width: 100%; border-radius: 8px; border: 1px solid var(--border);
       display: block; background: #000;
     }
-    .preview-label {
-      font-size: 12px; color: var(--text); font-weight: 600; margin-bottom: 8px;
-    }
-    .word-count {
-      margin-top: 8px; font-size: 12px; color: var(--muted);
-    }
+    .preview-label { font-size: 12px; color: var(--text); font-weight: 600; margin-bottom: 8px; }
+    .word-count { margin-top: 8px; font-size: 12px; color: var(--muted); }
     .word-count span { color: var(--accent-h); font-weight: 700; }
 
-    /* ─── Results ─────────────────────────────────────────────────────────────── */
     #resultsSection { display: none; }
     #resultsSection.show { display: block; }
 
-    /* Summary banner */
     #summaryBanner {
       border-radius: 12px;
       padding: 16px 24px;
@@ -189,30 +176,26 @@
       box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     }
     #summaryBanner.match {
-      background: var(--green-bg);
-      border: 1px solid var(--green);
-      color: #a7f3d0;
+      background: var(--green-bg); border: 1px solid var(--green); color: #a7f3d0;
     }
     #summaryBanner.diff {
-      background: var(--red-bg);
-      border: 1px solid var(--red);
-      color: #fecdd3;
+      background: var(--red-bg); border: 1px solid var(--red); color: #fecdd3;
     }
 
-    /* Diff canvases */
-    .diff-canvas-wrap { display: flex; flex-direction: column; background: var(--surface2); padding: 12px; border-radius: 12px; border: 1px solid var(--border); }
+    .diff-canvas-wrap {
+      display: flex; flex-direction: column;
+      background: var(--surface2); padding: 12px; border-radius: 12px; border: 1px solid var(--border);
+    }
     .diff-legend {
       display: flex; align-items: center; gap: 8px;
       margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text);
     }
-    .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2); }
+    .dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
     canvas.diff-canvas {
       width: 100%; height: auto; border-radius: 6px;
-      border: 1px solid var(--border); display: block;
-      background: #fff; /* Ensure label background is somewhat visible if transparent */
+      border: 1px solid var(--border); display: block; background: #fff;
     }
 
-    /* Text diff */
     .text-diff-box {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -230,19 +213,19 @@
 
     .chip-match   { color: var(--muted); }
     .chip-removed {
-      background: var(--green-bg); color: #6ee7b7; border: 1px solid var(--green); border-radius: 4px;
-      padding: 2px 6px; text-decoration: line-through; display: inline-block; margin: 2px;
+      background: var(--green-bg); color: #6ee7b7; border: 1px solid var(--green);
+      border-radius: 4px; padding: 2px 6px; text-decoration: line-through;
+      display: inline-block; margin: 2px;
     }
     .chip-added {
-      background: var(--red-bg); color: #fda4af; border: 1px solid var(--red); border-radius: 4px;
-      padding: 2px 6px; display: inline-block; margin: 2px;
+      background: var(--red-bg); color: #fda4af; border: 1px solid var(--red);
+      border-radius: 4px; padding: 2px 6px; display: inline-block; margin: 2px;
     }
     .chip-color {
-      background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid var(--yellow); border-radius: 4px;
-      padding: 2px 6px; display: inline-block; margin: 2px;
+      background: rgba(245,158,11,0.2); color: #fcd34d; border: 1px solid var(--yellow);
+      border-radius: 4px; padding: 2px 6px; display: inline-block; margin: 2px;
     }
 
-    /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: var(--surface); }
     ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
@@ -252,13 +235,11 @@
 <body>
 <div class="wrap">
 
-  <!-- Header -->
   <header>
     <h1>Label Diff Scanner</h1>
-    <p>Hybrid Architecture: PaddleOCR + PP-Structure + OpenCV Edge Detection</p>
+    <p>Cloud Vision OCR · ORB Alignment · Pixel-level Tamper Detection</p>
   </header>
 
-  <!-- Status -->
   <div id="statusBar">
     <div id="spinnerEl" class="spinner" style="display:none"></div>
     <div style="flex:1">
@@ -269,7 +250,6 @@
     </div>
   </div>
 
-  <!-- Upload card -->
   <div class="card">
     <div class="card-title">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
@@ -277,9 +257,8 @@
     </div>
     <div class="grid2" style="margin-bottom:16px">
 
-      <!-- Reference -->
       <div>
-        <span class="upload-label">1 — Master/Original Label</span>
+        <span class="upload-label">1 — Master / Original Label</span>
         <div class="drop-zone" id="refZone">
           <input type="file" id="refInput" accept="image/*" />
           <div class="drop-icon">📄</div>
@@ -289,9 +268,8 @@
         </div>
       </div>
 
-      <!-- User / Scanned -->
       <div>
-        <span class="upload-label">2 — Scanned/Modified Label</span>
+        <span class="upload-label">2 — Scanned / Modified Label</span>
         <div class="drop-zone" id="userZone">
           <input type="file" id="userInput" accept="image/*" />
           <div class="drop-icon">📸</div>
@@ -305,21 +283,20 @@
     <button id="runBtn" disabled>Run Compliance Scan</button>
   </div>
 
-  <!-- OCR preview (what the backend processed) -->
   <div id="previewSection">
     <div class="card">
       <div class="card-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
-        OpenCV Normalisation (Pre-OCR)
+        Image Processing Preview
       </div>
       <div class="grid2">
         <div>
-          <div class="preview-label">Original — CLAHE Enhanced</div>
+          <div class="preview-label">Original — Backend Preview</div>
           <img id="refPreview" class="preview-img" alt="" />
           <div class="word-count">Words extracted: <span id="refWordCount">–</span></div>
         </div>
         <div>
-          <div class="preview-label">Scanned — CLAHE Enhanced</div>
+          <div class="preview-label">Scanned — Backend Preview</div>
           <img id="userPreview" class="preview-img" alt="" />
           <div class="word-count">Words extracted: <span id="userWordCount">–</span></div>
         </div>
@@ -327,35 +304,32 @@
     </div>
   </div>
 
-  <!-- Results -->
   <div id="resultsSection">
     <div id="summaryBanner"></div>
 
-    <!-- Visual diff -->
     <div class="card" style="margin-bottom:24px">
       <div class="card-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        Spatial Mapping & Visual Tampering
+        Spatial Mapping &amp; Visual Tampering
       </div>
       <div class="grid2">
         <div class="diff-canvas-wrap">
           <div class="diff-legend">
             <div class="dot" style="background:var(--green)"></div>
-            <span>Original — Elements Missing/Altered</span>
+            <span>Original — Elements Missing / Altered</span>
           </div>
           <canvas id="refCanvas" class="diff-canvas"></canvas>
         </div>
         <div class="diff-canvas-wrap">
           <div class="diff-legend">
             <div class="dot" style="background:var(--red)"></div>
-            <span>Scanned — New Elements/Overlays</span>
+            <span>Scanned — New Elements / Overlays</span>
           </div>
           <canvas id="userCanvas" class="diff-canvas"></canvas>
         </div>
       </div>
     </div>
 
-    <!-- Text diff -->
     <div class="card">
       <div class="card-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
@@ -379,11 +353,9 @@
 <script>
 'use strict';
 
-// ── State ──────────────────────────────────────────────────────────────────────
 let refFile  = null;
 let userFile = null;
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
 function esc(s) {
@@ -391,7 +363,6 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ── Status ─────────────────────────────────────────────────────────────────────
 function setStatus(msg, state = 'info', progress = null) {
   const bar   = $('statusBar');
   const txt   = $('statusText');
@@ -407,13 +378,9 @@ function setStatus(msg, state = 'info', progress = null) {
   if (progress !== null) pbar.style.width = Math.round(progress * 100) + '%';
 }
 
-// ── Upload / drag-drop ─────────────────────────────────────────────────────────
 function setupZone(inputId, zoneId, hintId, nameId, thumbId, cb) {
-  const input = $(inputId);
-  const zone  = $(zoneId);
-  const hint  = $(hintId);
-  const name  = $(nameId);
-  const thumb = $(thumbId);
+  const input = $(inputId), zone  = $(zoneId),  hint  = $(hintId);
+  const name  = $(nameId),  thumb = $(thumbId);
 
   function handle(file) {
     if (!file || !file.type.startsWith('image/')) return;
@@ -421,19 +388,15 @@ function setupZone(inputId, zoneId, hintId, nameId, thumbId, cb) {
     hint.style.display  = 'none';
     name.textContent    = short;
     name.style.display  = 'block';
-
-    // Thumbnail preview
     const url = URL.createObjectURL(file);
     thumb.src = url;
     thumb.style.display = 'block';
-
     cb(file);
     checkReady();
   }
 
   input.addEventListener('change', e => { if (e.target.files[0]) handle(e.target.files[0]); });
-
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
   zone.addEventListener('dragleave', ()  => zone.classList.remove('drag-over'));
   zone.addEventListener('drop', e => {
     e.preventDefault();
@@ -450,8 +413,7 @@ function checkReady() {
   if (refFile && userFile) setStatus('Documents ready — commence compliance scan.', 'info');
 }
 
-// ── Canvas drawing ─────────────────────────────────────────────────────────────
-const DISPLAY_MAX = 800; // Increased resolution for better viewing
+const DISPLAY_MAX = 800;
 
 function drawImageOnCanvas(canvas, imageSrc) {
   return new Promise(resolve => {
@@ -467,14 +429,11 @@ function drawImageOnCanvas(canvas, imageSrc) {
   });
 }
 
-/**
- * Draw a rotated polygon box (PaddleOCR 4-corner format).
- * polygon: [[x,y], [x,y], [x,y], [x,y]] in original image coords.
- * scale:   display_canvas_width / original_image_width
- */
+// FIX: polygon is a Pydantic Polygon object: { points: [[x,y], ...] }
+// Extract .points before iterating.
 function drawPolygon(canvas, polygon, hexColor, scale) {
+  const pts = polygon.points.map(([x, y]) => [x * scale, y * scale]);
   const ctx = canvas.getContext('2d');
-  const pts = polygon.map(([x, y]) => [x * scale, y * scale]);
 
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
@@ -492,37 +451,45 @@ function drawPolygon(canvas, polygon, hexColor, scale) {
   ctx.fill();
 }
 
-/**
- * Draw an axis-aligned bounding box.
- * box: { x, y, w, h } in original image coords.
- * scale: display scale factor.
- */
+// FIX: TamperBox is { bbox: {x,y,w,h}, source, score } — draw box.bbox not box.
 function drawRect(canvas, box, hexColor, scale, opacity = 0.35) {
+  const b   = box.bbox;                        // ← unwrap .bbox
   const ctx = canvas.getContext('2d');
-  const x = box.x * scale, y = box.y * scale;
-  const w = box.w * scale, h = box.h * scale;
+  const x = b.x * scale, y = b.y * scale;
+  const w = b.w * scale, h = b.h * scale;
 
-  // Dashed border — more visible on dark backgrounds than solid
+  // Large boxes (> 15% of canvas area) get stroke-only — no fill.
+  // This keeps underlying content (barcodes, text) fully readable
+  // when a whole-background change fires a giant tamper region.
+  const canvasArea = canvas.width * canvas.height;
+  const boxArea    = w * h;
+  const isLarge    = boxArea > canvasArea * 0.15;
+  const fillOpacity = isLarge ? 0 : opacity;
+
+  // Stroke — thicker on large boxes so the border is still visible
   ctx.save();
-  ctx.setLineDash([6, 3]);
+  ctx.setLineDash([8, 4]);
   ctx.strokeStyle = hexColor;
-  ctx.lineWidth   = 3;
+  ctx.lineWidth   = isLarge ? 4 : 3;
   ctx.strokeRect(x, y, w, h);
   ctx.restore();
 
-  const r = parseInt(hexColor.slice(1,3), 16);
-  const g = parseInt(hexColor.slice(3,5), 16);
-  const b = parseInt(hexColor.slice(5,7), 16);
+  // Fill — suppressed on large boxes
+  if (fillOpacity > 0) {
+    const r  = parseInt(hexColor.slice(1,3), 16);
+    const g  = parseInt(hexColor.slice(3,5), 16);
+    const b2 = parseInt(hexColor.slice(5,7), 16);
+    ctx.fillStyle = `rgba(${r},${g},${b2},${fillOpacity})`;
+    ctx.fillRect(x, y, w, h);
+  }
 
-  // Higher opacity fill so it registers on dark/black backgrounds
-  ctx.fillStyle = `rgba(${r},${g},${b},${opacity})`;
-  ctx.fillRect(x, y, w, h);
-
-  // White label dot in corner so the box is identifiable at small scale
-  ctx.beginPath();
-  ctx.arc(x + 6, y + 6, 4, 0, Math.PI * 2);
-  ctx.fillStyle = hexColor;
-  ctx.fill();
+  // Corner dot — omit on large boxes (would sit inside the filled area)
+  if (!isLarge) {
+    ctx.beginPath();
+    ctx.arc(x + 6, y + 6, 4, 0, Math.PI * 2);
+    ctx.fillStyle = hexColor;
+    ctx.fill();
+  }
 }
 
 $('runBtn').addEventListener('click', async () => {
@@ -532,49 +499,55 @@ $('runBtn').addEventListener('click', async () => {
   $('resultsSection').classList.remove('show');
   $('previewSection').classList.remove('show');
 
-  // ── Check server is up ──
+  // Health check
   try {
-    const health = await fetch('/health');
-    const hj = await health.json();
+    const hj = await fetch('/health').then(r => r.json());
     if (!hj.workers_ready) {
       setStatus('Workers are still warming up — wait a moment and retry.', 'error');
       $('runBtn').disabled = false;
       return;
     }
   } catch (_) {
-    setStatus('Cannot reach server. Is Python running?  →  python main.py', 'error');
+    setStatus('Cannot reach server. Is uvicorn running?', 'error');
     $('runBtn').disabled = false;
     return;
   }
 
-  // ── Build FormData and POST ──
-  setStatus('Transmitting payload to backend…', 'loading', 0.05);
-
+  // POST both images to /scan (single-step convenience endpoint)
+  setStatus('Transmitting images to backend…', 'loading', 0.05);
   const form = new FormData();
   form.append('ref_image',  refFile);
   form.append('user_image', userFile);
 
-  // Fake staged progress matching the new v4.3 backend pipeline
   let fakeProgress = 0.05;
   const fakeTimer = setInterval(() => {
     fakeProgress = Math.min(fakeProgress + 0.012, 0.90);
     setStatus(
-      fakeProgress < 0.25 ? 'Round 1: OpenCV image standardisation & global OCR…' :
-      fakeProgress < 0.55 ? 'Round 2: PP-Structure Layout detection running in parallel…' :
-      fakeProgress < 0.70 ? 'Round 2: Targeted Nutrition-pass OCR enhancement…' :
-                            'Round 3: Spatial alignment & graphic diff computation…',
-      'loading',
-      fakeProgress,
+      fakeProgress < 0.25 ? 'Phase 1: Cloud Vision OCR + ORB alignment (parallel)…' :
+      fakeProgress < 0.55 ? 'Phase 2: Text diff + visual tamper detection (parallel)…' :
+      fakeProgress < 0.75 ? 'Colour calibration · barcode · layout comparison…' :
+                            'Assembling forensic report…',
+      'loading', fakeProgress,
     );
   }, 500);
 
   let data;
   try {
-    const res = await fetch('/compare', { method: 'POST', body: form });
+    const res = await fetch('/scan', { method: 'POST', body: form });
     clearInterval(fakeTimer);
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || 'Server error');
+      // FIX: FastAPI error bodies are JSON — extract the detail string properly.
+      let detail = res.statusText;
+      try {
+        const errBody = await res.json();
+        if (typeof errBody.detail === 'string') {
+          detail = errBody.detail;
+        } else if (Array.isArray(errBody.detail)) {
+          // Pydantic validation errors come as an array of {loc, msg, type}
+          detail = errBody.detail.map(e => `${e.loc.join('.')}: ${e.msg}`).join(' | ');
+        }
+      } catch (_) {}
+      throw new Error(`${res.status} — ${detail}`);
     }
     data = await res.json();
   } catch (err) {
@@ -584,78 +557,84 @@ $('runBtn').addEventListener('click', async () => {
     return;
   }
 
-  setStatus('Compiling forensic report…', 'loading', 0.96);
+  setStatus('Rendering results…', 'loading', 0.97);
 
-  // ── Show preprocessing previews ──
+  // Preview images
   $('refPreview').src  = 'data:image/jpeg;base64,' + data.ref_preview;
   $('userPreview').src = 'data:image/jpeg;base64,' + data.user_preview;
   $('refWordCount').textContent  = data.ref_word_count;
   $('userWordCount').textContent = data.user_word_count;
   $('previewSection').classList.add('show');
 
-  // ── Draw diff canvases ──
+  // Draw diff canvases
   const refUrl  = URL.createObjectURL(refFile);
   const userUrl = URL.createObjectURL(userFile);
-
   const [refScale, userScale] = await Promise.all([
     drawImageOnCanvas($('refCanvas'),  refUrl),
     drawImageOnCanvas($('userCanvas'), userUrl),
   ]);
 
-  // ── Draw word-level diff boxes ──
+  // Word-level diff overlays
+  // FIX: use .polygon.points (Polygon model), handle unmatched_run (no polygon)
   for (const d of data.diff) {
-    if (d.type === 'removed') {
-      drawPolygon($('refCanvas'),  d.word.polygon, '#10b981', refScale); // Green
-    } else if (d.type === 'added') {
-      drawPolygon($('userCanvas'), d.word.polygon, '#f43f5e', userScale); // Red
-    } else if (d.type === 'modified') {
-      drawPolygon($('refCanvas'),  d.ref.polygon,  '#10b981', refScale); // Green
-      drawPolygon($('userCanvas'), d.user.polygon, '#f43f5e', userScale); // Red
-    } else if (d.type === 'color_changed') {
-      drawPolygon($('refCanvas'),  d.ref.polygon,  '#f59e0b', refScale); // Yellow
-      drawPolygon($('userCanvas'), d.user.polygon, '#f59e0b', userScale); // Yellow
-    }
+    try {
+      if (d.type === 'removed' && d.word?.polygon) {
+        drawPolygon($('refCanvas'),  d.word.polygon, '#10b981', refScale);
+      } else if (d.type === 'added' && d.word?.polygon) {
+        drawPolygon($('userCanvas'), d.word.polygon, '#f43f5e', userScale);
+      } else if (d.type === 'modified') {
+        if (d.ref?.polygon)  drawPolygon($('refCanvas'),  d.ref.polygon,  '#10b981', refScale);
+        if (d.user?.polygon) drawPolygon($('userCanvas'), d.user.polygon, '#f43f5e', userScale);
+      } else if (d.type === 'color_changed') {
+        if (d.ref?.polygon)  drawPolygon($('refCanvas'),  d.ref.polygon,  '#f59e0b', refScale);
+        if (d.user?.polygon) drawPolygon($('userCanvas'), d.user.polygon, '#f59e0b', userScale);
+      }
+    } catch (_) { /* skip malformed entry */ }
   }
 
-  // ── Draw visual tampering and white border boxes ──
-  for (const box of (data.tamper_boxes_ref  || [])) drawRect($('refCanvas'),  box, '#10b981', refScale,  0.40);
-  for (const box of (data.tamper_boxes_user || [])) drawRect($('userCanvas'), box, '#f43f5e', userScale, 0.40);
+  // Tamper box overlays — FIX: drawRect now unwraps box.bbox internally
+  for (const box of (data.tamper_boxes_ref  || [])) {
+    try { drawRect($('refCanvas'),  box, '#10b981', refScale,  0.40); } catch (_) {}
+  }
+  for (const box of (data.tamper_boxes_user || [])) {
+    try { drawRect($('userCanvas'), box, '#f43f5e', userScale, 0.40); } catch (_) {}
+  }
 
-  // ── Build text diff ──
+  // Text diff panels
   let refHtml = '', userHtml = '';
   for (const d of data.diff) {
     if (d.type === 'match') {
-      refHtml  += `<span class="chip-match">${esc(d.ref.text)}</span> `;
-      userHtml += `<span class="chip-match">${esc(d.user.text)}</span> `;
+      refHtml  += `<span class="chip-match">${esc(d.ref?.text ?? '')}</span> `;
+      userHtml += `<span class="chip-match">${esc(d.user?.text ?? '')}</span> `;
     } else if (d.type === 'removed') {
-      refHtml  += `<span class="chip-removed">${esc(d.word.text)}</span> `;
+      refHtml  += `<span class="chip-removed">${esc(d.word?.text ?? '')}</span> `;
     } else if (d.type === 'added') {
-      userHtml += `<span class="chip-added">${esc(d.word.text)}</span> `;
+      userHtml += `<span class="chip-added">${esc(d.word?.text ?? '')}</span> `;
     } else if (d.type === 'modified') {
-      refHtml  += `<span class="chip-removed">${esc(d.ref.text)}</span> `;
-      userHtml += `<span class="chip-added">${esc(d.user.text)}</span> `;
+      refHtml  += `<span class="chip-removed">${esc(d.ref?.text ?? '')}</span> `;
+      userHtml += `<span class="chip-added">${esc(d.user?.text ?? '')}</span> `;
     } else if (d.type === 'color_changed') {
-      refHtml  += `<span class="chip-color" title="Color Delta: ${d.color_delta}">${esc(d.ref.text)} 🎨</span> `;
-      userHtml += `<span class="chip-color" title="Color Delta: ${d.color_delta}">${esc(d.user.text)} 🎨</span> `;
+      refHtml  += `<span class="chip-color" title="Color delta: ${d.color_delta}">${esc(d.ref?.text ?? '')} 🎨</span> `;
+      userHtml += `<span class="chip-color" title="Color delta: ${d.color_delta}">${esc(d.user?.text ?? '')} 🎨</span> `;
     }
   }
   $('refTextOut').innerHTML  = refHtml  || '<em>No text detected.</em>';
   $('userTextOut').innerHTML = userHtml || '<em>No text detected.</em>';
 
-  // ── Summary banner ──
-  const banner   = $('summaryBanner');
-  // Visual tamper regions exclude PP-structure figures which are counted separately now
-  const nTamper  = ((data.tamper_boxes_ref || []).length) - (data.pp_figure_count || 0); 
+  // Summary banner
+  const banner        = $('summaryBanner');
+  const nTamper       = (data.tamper_count_ref || 0) + (data.tamper_count_user || 0)
+                        - (data.pp_figure_count || 0) * 2;
   const nWhiteBorders = data.white_border_count || 0;
-  const nFigures = data.pp_figure_count || 0;
-  
-  const anyDiff  = data.removed_count > 0 || data.added_count > 0 ||
-                   data.modified_count > 0 || data.color_changed_count > 0 || 
-                   nTamper > 0 || nWhiteBorders > 0 || nFigures > 0;
+  const nFigures      = data.pp_figure_count    || 0;
+
+  const anyDiff = data.removed_count > 0 || data.added_count > 0 ||
+                  data.modified_count > 0 || data.color_changed_count > 0 ||
+                  nTamper > 0 || nWhiteBorders > 0 || nFigures > 0;
 
   if (!anyDiff) {
     banner.className   = 'match';
-    banner.textContent = `✓  COMPLIANT: 100% Match — No anomalies detected`;
+    banner.textContent = '✓  COMPLIANT: 100% Match — No anomalies detected';
   } else {
     const parts = [];
     if (data.modified_count      > 0) parts.push(`${data.modified_count} text alteration(s)`);
@@ -665,7 +644,6 @@ $('runBtn').addEventListener('click', async () => {
     if (nFigures                 > 0) parts.push(`${nFigures} graphic layout anomaly(s)`);
     if (nTamper                  > 0) parts.push(`${nTamper} visual tamper region(s)`);
     if (nWhiteBorders            > 0) parts.push(`${nWhiteBorders} padded border(s)`);
-    
     banner.className   = 'diff';
     banner.textContent = `⚠  NON-COMPLIANT: ${parts.join(',  ')}`;
   }
@@ -673,14 +651,12 @@ $('runBtn').addEventListener('click', async () => {
   $('resultsSection').classList.add('show');
   $('resultsSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-  // Update success text with actual timing from backend
-  const timingInfo = data.total_time_s ? `Total: ${data.total_time_s}s (OCR: ${data.ocr_time_s}s)` : 'Complete';
-
+  // FIX: use phase1_time_s (not ocr_time_s which doesn't exist in CompareResponse)
   setStatus(
-    `${timingInfo}  ·  ` +
+    `Complete in ${data.total_time_s}s  ·  ` +
+    `OCR+align ${data.phase1_time_s}s  ·  diff+tamper ${data.phase2_time_s}s  ·  ` +
     `${data.modified_count} changed  ·  ${data.color_changed_count} recoloured  ·  ` +
-    `${data.removed_count} removed  ·  ${data.added_count} added  ·  ` +
-    `${nFigures} layout anomaly(s)  ·  ${nTamper} tamper box(es)`,
+    `${data.removed_count} removed  ·  ${data.added_count} added`,
     'success', 1.0,
   );
 
