@@ -49,7 +49,7 @@ opencv-python-headless>=4.9.0
     #   colour.py   — cvtColor (BGR→LAB), threshold (Otsu)
     #   tamper.py   — morphologyEx, findContours, absdiff, bitwise_or
     #   main.py     — imdecode, imencode (JPEG preview encoding)
-numpy=1.26.0
+numpy>=1.26.0
     # 1.26 is the last series before the NumPy 2.0 ABI break.
     # Pin to <2.0 if your opencv-python-headless wheel predates NumPy 2.x.
     # numpy>=2.0 requires opencv>=4.10 (not yet widely available as a wheel).
