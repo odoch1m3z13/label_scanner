@@ -694,7 +694,6 @@ function renderResults(d) {
   document.getElementById('resultsEmpty').style.display = 'none';
   document.getElementById('resultsPanel').style.display = '';
 
-  // Verdict
   const verdictEl = document.getElementById('verdictBadge');
   const icons = { PASS: '✅', WARN: '⚠️', FAIL: '❌' };
   verdictEl.className = `verdict-badge verdict-${d.verdict}`;
@@ -750,7 +749,6 @@ function renderResults(d) {
   showResultTab('defects');
 }
 
-// ── Utils ─────────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
