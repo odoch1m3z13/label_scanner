@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Label Scanner</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161a23;
+    --surface2: #1e2330;
+    --border: #2a2f3d;
+    --accent: #4f8ef7;
+    --accent2: #7c5cfc;
+    --pass: #22c55e;
+    --warn: #f59e0b;
+    --fail: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  header .logo {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  header h1 { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+  header span { font-size: 12px; color: var(--muted); margin-left: 4px; }
+  .health-dot {
+    margin-left: auto;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+  }
+  .health-dot.ok { background: var(--pass); box-shadow: 0 0 6px var(--pass); }
+  .health-dot.err { background: var(--fail); }
+
+  /* Layout */
+  main {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    gap: 24px;
+    padding: 24px 28px;
+    flex: 1;
+  }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  /* Panel */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 16px;
+  }
+
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--bg);
+    padding: 4px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+  }
+  .tab {
+    flex: 1;
+    padding: 8px 14px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all .2s;
+  }
+  .tab.active {
+    background: var(--surface2);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+
+  /* Upload area */
+  .upload-area {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 28px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .2s;
+    position: relative;
+  }
+  .upload-area:hover, .upload-area.drag { border-color: var(--accent); background: rgba(79,142,247,.06); }
+  .upload-area input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .upload-icon { font-size: 32px; margin-bottom: 8px; }
+  .upload-area .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .upload-preview {
+    width: 100%;
+    max-height: 160px;
+    object-fit: contain;
+    border-radius: 6px;
+    margin-top: 12px;
+    display: none;
+  }
+
+  /* Form controls */
+  label.field-label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  input[type=text], select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+    transition: border .2s;
+  }
+  input[type=text]:focus, select:focus { border-color: var(--accent); }
+  .field { margin-bottom: 16px; }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 10px 20px;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: all .2s;
+    width: 100%;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
+  .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { background: var(--border); }
+
+  /* Results */
+  .verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 18px;
+    margin-bottom: 20px;
+    width: 100%;
+    justify-content: center;
+  }
+  .verdict-PASS { background: rgba(34,197,94,.15); color: var(--pass); border: 1px solid rgba(34,197,94,.3); }
+  .verdict-WARN { background: rgba(245,158,11,.15); color: var(--warn); border: 1px solid rgba(245,158,11,.3); }
+  .verdict-FAIL { background: rgba(239,68,68,.15); color: var(--fail); border: 1px solid rgba(239,68,68,.3); }
+
+  /* Stats bar */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+  .stat-value { font-size: 22px; font-weight: 700; line-height: 1; }
+  .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .stat-card.crit .stat-value { color: var(--fail); }
+  .stat-card.total .stat-value { color: var(--warn); }
+  .stat-card.time .stat-value { color: var(--accent); }
+
+  /* Image comparison */
+  .image-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .image-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .image-box-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .image-box-title .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .dot-green { background: var(--pass); }
+  .dot-red { background: var(--fail); }
+  .image-box img {
+    width: 100%; display: block;
+    max-height: 300px; object-fit: contain;
+    background: #000;
+  }
+
+  /* Defect list */
+  .defect-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .defect-type-badge {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+  }
+  .badge-text { background: rgba(79,142,247,.2); color: var(--accent); }
+  .badge-logo { background: rgba(124,92,252,.2); color: var(--accent2); }
+  .badge-color { background: rgba(245,158,11,.2); color: var(--warn); }
+  .badge-anomaly { background: rgba(239,68,68,.2); color: var(--fail); }
+  .badge-barcode { background: rgba(34,197,94,.2); color: var(--pass); }
+  .defect-sev {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+  .sev-critical { background: rgba(239,68,68,.25); color: var(--fail); }
+  .sev-major { background: rgba(245,158,11,.25); color: var(--warn); }
+  .sev-minor { background: rgba(100,116,139,.25); color: var(--muted); }
+  .defect-desc { flex: 1; color: var(--text); line-height: 1.4; }
+  .defect-change {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .defect-change .from { color: var(--pass); }
+  .defect-change .to { color: var(--fail); }
+
+  /* Stage timeline */
+  .stage-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .stage-row:last-child { border-bottom: none; }
+  .stage-name { flex: 1; font-weight: 500; text-transform: capitalize; }
+  .stage-count {
+    font-size: 12px;
+    color: var(--muted);
+    width: 80px;
+    text-align: right;
+  }
+  .stage-ms {
+    font-size: 12px;
+    color: var(--accent);
+    width: 70px;
+    text-align: right;
+  }
+  .stage-bar-wrap { width: 80px; height: 4px; background: var(--border); border-radius: 2px; }
+  .stage-bar { height: 4px; border-radius: 2px; background: var(--accent); }
+
+  /* Labels list */
+  .label-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .label-item:hover { border-color: var(--accent); }
+  .label-item.selected { border-color: var(--accent); background: rgba(79,142,247,.08); }
+  .label-item-id { font-size: 12px; font-family: monospace; flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .label-item-del { font-size: 16px; color: var(--muted); cursor: pointer; flex-shrink: 0; line-height: 1; padding: 2px; }
+  .label-item-del:hover { color: var(--fail); }
+
+  /* Loading */
+  .spinner {
+    width: 20px; height: 20px;
+    border: 2px solid rgba(255,255,255,.2);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Empty state */
+  .empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; }
+
+  /* Toast */
+  #toast {
+    position: fixed;
+    bottom: 24px; right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #fff;
+    opacity: 0;
+    transform: translateY(8px);
+    transition: all .25s;
+    z-index: 999;
+    max-width: 320px;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.success { background: #166534; border: 1px solid var(--pass); }
+  #toast.error { background: #7f1d1d; border: 1px solid var(--fail); }
+  #toast.info { background: #1e3a5f; border: 1px solid var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🔬</div>
+  <h1>Label Scanner <span>Industrial Inspection</span></h1>
+  <div id="healthDot" class="health-dot" title="API status"></div>
+</header>
+
+<main>
+  <!-- LEFT PANEL -->
+  <div>
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('register')">Register</button>
+      <button class="tab" onclick="switchTab('scan')">Scan</button>
+    </div>
+
+    <!-- REGISTER TAB -->
+    <div id="tabRegister">
+      <div class="panel">
+        <div class="panel-title">Register Reference Label</div>
+
+        <div class="field">
+          <label class="field-label">Label Image</label>
+          <div class="upload-area" id="regDrop">
+            <input type="file" id="regFile" accept="image/*" onchange="previewImage(this,'regPreview','regDropText')" />
+            <div id="regDropText">
+              <div class="upload-icon">📷</div>
+              <div>Drop reference image or click to browse</div>
+              <div class="hint">PNG, JPG, BMP, TIFF up to 20MB</div>
+            </div>
+            <img id="regPreview" class="upload-preview" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Label ID (optional)</label>
+          <input type="text" id="regLabelId" placeholder="Auto-generated if empty" />
+        </div>
+
+        <button class="btn btn-primary" id="regBtn" onclick="registerLabel()">
+          <span id="regBtnContent">Register Reference</span>
+        </button>
+      </div>
+
+      <!-- Registered labels -->
+      <div class="panel" style="margin-top:16px">
+        <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+          Registered Labels
+          <button class="btn btn-secondary" style="width:auto;padding:4px 10px;font-size:11px" onclick="loadLabels()">↻ Refresh</button>
+        </div>
+        <div id="labelsList"><div class="empty"><div class="empty-icon">📋</div>No labels registered yet</div></div>
+      </div>
+    </div>
+
+    <!-- SCAN TAB -->
+    <div id="tabScan" style="display:none">
+      <div class="panel">
+        <div class="panel-title">Scan Label</div>
+
+        <div class="field">
+          <label class="field-label">Scan Image</label>
+          <div class="upload-area" id="scanDrop">
+            <input type="file" id="scanFile" accept="image/*" onchange="previewImage(this,'scanPreview','scanDropText')" />
+            <div id="scanDropText">
+              <div class="upload-icon">🔍</div>
+              <div>Drop scan image or click to browse</div>
+              <div class="hint">PNG, JPG, BMP up to 20MB</div>
+            </div>
+            <img id="scanPreview" class="upload-preview" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Reference Label</label>
+          <select id="scanLabelSelect">
+            <option value="">— select a reference —</option>
+          </select>
+        </div>
+
+        <button class="btn btn-primary" id="scanBtn" onclick="runScan()">
+          <span id="scanBtnContent">Run Inspection</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL: Results -->
+  <div>
+    <div id="resultsEmpty" class="panel" style="height:100%;display:flex;align-items:center;justify-content:center">
+      <div class="empty">
+        <div class="empty-icon">🎯</div>
+        <div>Scan results will appear here</div>
+        <div style="font-size:12px;margin-top:6px">Register a reference, then scan a label</div>
+      </div>
+    </div>
+
+    <div id="resultsPanel" style="display:none">
+      <!-- Verdict -->
+      <div id="verdictBadge" class="verdict-badge"></div>
+
+      <!-- Stats -->
+      <div class="stats-row">
+        <div class="stat-card crit">
+          <div class="stat-value" id="statCrit">0</div>
+          <div class="stat-label">Critical</div>
+        </div>
+        <div class="stat-card total">
+          <div class="stat-value" id="statTotal">0</div>
+          <div class="stat-label">Total Defects</div>
+        </div>
+        <div class="stat-card time">
+          <div class="stat-value" id="statTime">0</div>
+          <div class="stat-label">ms</div>
+        </div>
+      </div>
+
+      <!-- Image comparison -->
+      <div class="image-compare" id="imageCompare" style="display:none">
+        <div class="image-box">
+          <div class="image-box-title"><span class="dot dot-green"></span> Reference</div>
+          <img id="refAnn" src="" alt="Annotated Reference" />
+        </div>
+        <div class="image-box">
+          <div class="image-box-title"><span class="dot dot-red"></span> Scan</div>
+          <img id="scanAnn" src="" alt="Annotated Scan" />
+        </div>
+      </div>
+
+      <!-- Tabs: Defects / Stages -->
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="btn btn-secondary" id="defectsTabBtn" style="width:auto;padding:7px 16px" onclick="showResultTab('defects')">
+          Defects <span id="defectCount" style="margin-left:4px;background:var(--border);padding:1px 6px;border-radius:4px;font-size:11px">0</span>
+        </button>
+        <button class="btn btn-secondary" id="stagesTabBtn" style="width:auto;padding:7px 16px" onclick="showResultTab('stages')">
+          Pipeline Stages
+        </button>
+      </div>
+
+      <div id="defectsPane" class="panel">
+        <div id="defectsList"></div>
+      </div>
+      <div id="stagesPane" class="panel" style="display:none">
+        <div id="stagesList"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+
+// ── Health ────────────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/api/health`);
+    const d = await r.json();
+    const dot = document.getElementById('healthDot');
+    dot.className = 'health-dot ' + (d.status === 'healthy' ? 'ok' : 'err');
+    dot.title = `API: ${d.status} | v${d.version}`;
+  } catch { document.getElementById('healthDot').className = 'health-dot err'; }
+}
+checkHealth();
+setInterval(checkHealth, 30000);
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.getElementById('tabRegister').style.display = tab === 'register' ? '' : 'none';
+  document.getElementById('tabScan').style.display = tab === 'scan' ? '' : 'none';
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', (i === 0) === (tab === 'register')));
+  if (tab === 'scan') loadLabelsIntoSelect();
+}
+
+function showResultTab(tab) {
+  document.getElementById('defectsPane').style.display = tab === 'defects' ? '' : 'none';
+  document.getElementById('stagesPane').style.display = tab === 'stages' ? '' : 'none';
+}
+
+// ── Image preview ─────────────────────────────────────────────────────────────
+function previewImage(input, previewId, dropTextId) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = document.getElementById(previewId);
+    img.src = e.target.result;
+    img.style.display = 'block';
+    document.getElementById(dropTextId).style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Register ──────────────────────────────────────────────────────────────────
+async function registerLabel() {
+  const file = document.getElementById('regFile').files[0];
+  if (!file) { toast('Please select a reference image', 'error'); return; }
+
+  const btn = document.getElementById('regBtn');
+  const content = document.getElementById('regBtnContent');
+  btn.disabled = true;
+  content.innerHTML = '<div class="spinner"></div> Registering…';
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const lid = document.getElementById('regLabelId').value.trim();
+    if (lid) fd.append('label_id', lid);
+
+    const r = await fetch(`${API}/api/register`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Registration failed');
+
+    toast(`✓ Label registered: ${d.label_id}`, 'success');
+    await loadLabels();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    content.textContent = 'Register Reference';
+  }
+}
+
+// ── Labels list ───────────────────────────────────────────────────────────────
+async function loadLabels() {
+  try {
+    const r = await fetch(`${API}/api/labels`);
+    const ids = await r.json();
+    const el = document.getElementById('labelsList');
+    if (!ids.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>No labels registered yet</div>';
+      return;
+    }
+    el.innerHTML = ids.map(id => `
+      <div class="label-item" onclick="selectLabel('${id}')">
+        <span style="font-size:16px">🏷️</span>
+        <span class="label-item-id">${id}</span>
+        <span class="label-item-del" onclick="deleteLabel(event,'${id}')">✕</span>
+      </div>`).join('');
+  } catch (e) { toast('Failed to load labels', 'error'); }
+}
+loadLabels();
+
+function selectLabel(id) {
+  document.querySelectorAll('.label-item').forEach(el => el.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+}
+
+async function deleteLabel(ev, id) {
+  ev.stopPropagation();
+  if (!confirm(`Delete label ${id}?`)) return;
+  try {
+    const r = await fetch(`${API}/api/labels/${id}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error('Delete failed');
+    toast(`Deleted: ${id}`, 'info');
+    await loadLabels();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function loadLabelsIntoSelect() {
+  try {
+    const r = await fetch(`${API}/api/labels`);
+    const ids = await r.json();
+    const sel = document.getElementById('scanLabelSelect');
+    sel.innerHTML = '<option value="">— select a reference —</option>' +
+      ids.map(id => `<option value="${id}">${id}</option>`).join('');
+  } catch {}
+}
+
+// ── Scan ──────────────────────────────────────────────────────────────────────
+async function runScan() {
+  const file = document.getElementById('scanFile').files[0];
+  const labelId = document.getElementById('scanLabelSelect').value;
+
+  if (!file) { toast('Please select a scan image', 'error'); return; }
+  if (!labelId) { toast('Please select a reference label', 'error'); return; }
+
+  const btn = document.getElementById('scanBtn');
+  const content = document.getElementById('scanBtnContent');
+  btn.disabled = true;
+  content.innerHTML = '<div class="spinner"></div> Scanning…';
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('label_id', labelId);
+
+    const r = await fetch(`${API}/api/scan`, { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Scan failed');
+
+    renderResults(d);
+    toast(`Scan complete: ${d.verdict}`, d.verdict === 'PASS' ? 'success' : 'error');
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    content.textContent = 'Run Inspection';
+  }
+}
+
+// ── Render results ────────────────────────────────────────────────────────────
+function renderResults(d) {
+  document.getElementById('resultsEmpty').style.display = 'none';
+  document.getElementById('resultsPanel').style.display = '';
+
+  const verdictEl = document.getElementById('verdictBadge');
+  const icons = { PASS: '✅', WARN: '⚠️', FAIL: '❌' };
+  verdictEl.className = `verdict-badge verdict-${d.verdict}`;
+  verdictEl.innerHTML = `${icons[d.verdict]} ${d.verdict} &nbsp; <span style="font-size:13px;font-weight:400;opacity:.7">scan_id: ${d.scan_id.slice(0,8)}…</span>`;
+
+  // Stats
+  document.getElementById('statCrit').textContent = d.critical_defects;
+  document.getElementById('statTotal').textContent = d.total_defects;
+  document.getElementById('statTime').textContent = Math.round(d.duration_ms);
+  document.getElementById('defectCount').textContent = d.total_defects;
+
+  // Annotated images
+  if (d.annotated_ref_url && d.annotated_scan_url) {
+    document.getElementById('refAnn').src = d.annotated_ref_url + '?t=' + Date.now();
+    document.getElementById('scanAnn').src = d.annotated_scan_url + '?t=' + Date.now();
+    document.getElementById('imageCompare').style.display = '';
+  }
+
+  // Defects list
+  const defList = document.getElementById('defectsList');
+  if (!d.all_defects.length) {
+    defList.innerHTML = '<div class="empty"><div class="empty-icon">✅</div>No defects detected</div>';
+  } else {
+    defList.innerHTML = d.all_defects.map(def => {
+      const change = (def.ref_value || def.scan_value) ? `
+        <div class="defect-change">
+          ${def.ref_value ? `<span class="from">REF: ${escHtml(def.ref_value)}</span>` : ''}
+          ${def.ref_value && def.scan_value ? ' → ' : ''}
+          ${def.scan_value ? `<span class="to">SCAN: ${escHtml(def.scan_value)}</span>` : ''}
+        </div>` : '';
+      return `
+        <div class="defect-item">
+          <span class="defect-type-badge badge-${def.change_type}">${def.change_type}</span>
+          <span class="defect-sev sev-${def.severity}">${def.severity}</span>
+          <div>
+            <div class="defect-desc">${escHtml(def.description)}</div>
+            ${change}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // Stage timeline
+  const maxMs = Math.max(...d.stages.map(s => s.duration_ms), 1);
+  document.getElementById('stagesList').innerHTML = d.stages.map(s => `
+    <div class="stage-row">
+      <div class="stage-name">⚙ ${s.stage}</div>
+      <div class="stage-bar-wrap"><div class="stage-bar" style="width:${(s.duration_ms/maxMs*100).toFixed(0)}%"></div></div>
+      <div class="stage-count">${s.defects ? s.defects.length : 0} issues</div>
+      <div class="stage-ms">${s.duration_ms.toFixed(0)} ms</div>
+    </div>`).join('');
+
+  showResultTab('defects');
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let toastTimer;
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+}
+</script>
+</body>
+</html>
