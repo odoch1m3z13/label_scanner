@@ -32,6 +32,4 @@ dist/
 Thumbs.db
 
 # Static and generated files
-static/
-data/
 .env
