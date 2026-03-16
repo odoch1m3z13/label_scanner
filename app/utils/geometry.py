@@ -116,22 +116,34 @@ def _put_label(
 
 def annotate_image(
     img: np.ndarray,
-    defects: list,     # list[Defect] — typed loosely to avoid circular import
+    defects: list,
     use_scan_box: bool = True,
 ) -> np.ndarray:
-    """Draw all defect bounding boxes on an image with severity colours."""
+    """
+    Draw only TEXT, BARCODE, and LOGO defects as boxes.
+    Green = reference location, Red = scan location.
+    Skips colour grid and anomaly boxes to reduce noise.
+    """
     out = img.copy()
+    
+    # Only draw these types — colour/anomaly are too noisy for box display
+    draw_types = {"text", "barcode", "logo"}
+    
     for d in defects:
+        if d.change_type not in draw_types:
+            continue
         box = d.scan_box if use_scan_box else d.ref_box
         if box is None:
             continue
-        color = _SEVERITY_COLORS.get(d.severity, RED)
-        label = f"{d.change_type}:{d.severity}"
+        
+        # Red for scan, green for reference
+        color = RED if use_scan_box else GREEN
+        label = f"{d.change_type}"
         x, y, w, h = box.to_xywh()
         cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
         _put_label(out, label, x, y, color)
+    
     return out
-
 
 # ── Coordinate scaling ────────────────────────────────────────────────────────
 
