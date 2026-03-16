@@ -119,29 +119,24 @@ def annotate_image(
     defects: list,
     use_scan_box: bool = True,
 ) -> np.ndarray:
-    """
-    Draw only TEXT, BARCODE, and LOGO defects as boxes.
-    Green = reference location, Red = scan location.
-    Skips colour grid and anomaly boxes to reduce noise.
-    """
     out = img.copy()
     
-    # Only draw these types — colour/anomaly are too noisy for box display
-    draw_types = {"text", "barcode", "logo"}
-    
     for d in defects:
-        if d.change_type not in draw_types:
+        # Skip low-confidence colour grid noise
+        if d.change_type == "color":
             continue
+        # Only show high-confidence anomalies
+        if d.change_type == "anomaly" and d.confidence < 0.7:
+            continue
+        
         box = d.scan_box if use_scan_box else d.ref_box
         if box is None:
             continue
         
-        # Red for scan, green for reference
         color = RED if use_scan_box else GREEN
-        label = f"{d.change_type}"
         x, y, w, h = box.to_xywh()
         cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
-        _put_label(out, label, x, y, color)
+        _put_label(out, d.change_type, x, y, color)
     
     return out
 
