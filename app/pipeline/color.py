@@ -95,7 +95,7 @@ def _delta_e_2000(lab1: np.ndarray, lab2: np.ndarray) -> float:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def extract_color_profile(img: np.ndarray, grid: int = 8) -> list[dict[str, Any]]:
+def extract_color_profile(img: np.ndarray, grid: int = 4) -> list[dict[str, Any]]:
     """
     Sample dominant colours on a grid. Used when registering the reference.
     """
