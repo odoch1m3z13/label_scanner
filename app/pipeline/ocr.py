@@ -197,3 +197,81 @@ def diff_ocr(
 
     duration_ms = (time.perf_counter() - t0) * 1000
     return defects, duration_ms
+
+def detect_text_color_changes(
+    ref: np.ndarray,
+    scan: np.ndarray,
+    ref_boxes: list[OcrBox],
+    scan_boxes: list[OcrBox],
+) -> list[Defect]:
+    """
+    For each matched OCR box pair, sample the dominant text colour
+    in the region and compare using ΔE. Flags colour-only text changes.
+    """
+    defects = []
+
+    for r in ref_boxes:
+        # Find matching scan box by IoU
+        best_iou = 0.3
+        best_s = None
+        for s in scan_boxes:
+            score = iou(r.box, s.box)
+            if score > best_iou:
+                best_iou = score
+                best_s = s
+
+        if best_s is None:
+            continue
+
+        # Only check if text content is the same (pure colour change)
+        if r.text.strip().lower() != best_s.text.strip().lower():
+            continue
+
+        ref_color = _sample_text_color(ref, r.box)
+        scan_color = _sample_text_color(scan, best_s.box)
+
+        if ref_color is None or scan_color is None:
+            continue
+
+        # Compute LAB delta
+        de = _lab_delta(ref_color, scan_color)
+
+        if de > 15.0:  # noticeable colour shift
+            defects.append(
+                Defect(
+                    change_type=ChangeType.COLOR,
+                    severity=Severity.MAJOR,
+                    description=f"Text colour changed: '{r.text}' (ΔE={de:.1f})",
+                    ref_box=r.box,
+                    scan_box=best_s.box,
+                    confidence=min(1.0, de / 50.0),
+                )
+            )
+
+    return defects
+
+
+def _sample_text_color(img: np.ndarray, box: BoundingBox):
+    """Sample the darkest (most ink-like) pixels in a text region."""
+    x, y, w, h = box.to_xywh()
+    crop = img[y:y+h, x:x+w]
+    if crop.size == 0:
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Take the darkest 20% of pixels as the text colour
+    threshold = np.percentile(gray, 20)
+    mask = gray <= threshold
+    if mask.sum() == 0:
+        return None
+    text_pixels = crop[mask].astype(np.float32)
+    return text_pixels.mean(axis=0)  # BGR mean
+
+
+def _lab_delta(bgr1: np.ndarray, bgr2: np.ndarray) -> float:
+    """Simple LAB euclidean distance between two BGR colours."""
+    def to_lab(bgr):
+        px = np.uint8([[bgr]])
+        return cv2.cvtColor(px, cv2.COLOR_BGR2LAB)[0][0].astype(np.float32)
+    lab1 = to_lab(bgr1)
+    lab2 = to_lab(bgr2)
+    return float(np.linalg.norm(lab1 - lab2))
