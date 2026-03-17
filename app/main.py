@@ -46,29 +46,15 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     (settings.data_dir.parent / "scans").mkdir(parents=True, exist_ok=True)
 
-    await init_db()
-    logger.success("Database ready")
-
-    # Pre-warm models at startup so first scan isn't slow
-    logger.info("Pre-warming models...")
     try:
-        from app.pipeline.ocr import run_ocr
-        import numpy as np
-        run_ocr(np.zeros((64, 64, 3), dtype=np.uint8))
-        logger.success("OCR model ready")
-    except Exception as e:
-        logger.warning(f"OCR pre-warm skipped: {e}")
-
-    try:
-        from app.pipeline.logo import _get_clip
-        _get_clip()
-        logger.success("CLIP model ready")
-    except Exception as e:
-        logger.warning(f"CLIP pre-warm skipped: {e}")
+        await init_db()
+        logger.success("Database ready")
+    except Exception as exc:
+        logger.error(f"Database connection failed: {exc}")
+        logger.warning("Starting without DB — fix DATABASE_URL and restart")
 
     yield
     logger.info("Label Scanner shutting down")
-
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
