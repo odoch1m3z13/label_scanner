@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [build.nixpacksPlan.phases.setup]
-nixPkgs = ["python310", "libGL", "libglib", "zbar"]
+nixPkgs = ["python310", "libGL", "glib", "zbar"]
 
 [build.nixpacksPlan.phases.install]
 cmds = [
