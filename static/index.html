@@ -541,7 +541,7 @@
 <script>
 const API = '';
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// ── Health ──
 async function checkHealth() {
   try {
     const r = await fetch(`${API}/api/health`);
@@ -554,7 +554,7 @@ async function checkHealth() {
 checkHealth();
 setInterval(checkHealth, 30000);
 
-// ── Tabs ──────────────────────────────────────────────────────────────────────
+// ── Tabs 
 function switchTab(tab) {
   document.getElementById('tabRegister').style.display = tab === 'register' ? '' : 'none';
   document.getElementById('tabScan').style.display = tab === 'scan' ? '' : 'none';
@@ -567,21 +567,18 @@ function showResultTab(tab) {
   document.getElementById('stagesPane').style.display = tab === 'stages' ? '' : 'none';
 }
 
-// ── Image preview ─────────────────────────────────────────────────────────────
+// ── Image preview 
 function previewImage(input, previewId, dropTextId) {
   const file = input.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = document.getElementById(previewId);
-    img.src = e.target.result;
-    img.style.display = 'block';
-    document.getElementById(dropTextId).style.display = 'none';
-  };
-  reader.readAsDataURL(file);
+  const url = URL.createObjectURL(file);
+  const img = document.getElementById(previewId);
+  img.src = url;
+  img.style.display = 'block';
+  document.getElementById(dropTextId).style.display = 'none';
 }
 
-// ── Register ──────────────────────────────────────────────────────────────────
+// ── Register 
 async function registerLabel() {
   const file = document.getElementById('regFile').files[0];
   if (!file) { toast('Please select a reference image', 'error'); return; }
@@ -611,7 +608,7 @@ async function registerLabel() {
   }
 }
 
-// ── Labels list ───────────────────────────────────────────────────────────────
+// ── Labels list ──
 async function loadLabels() {
   try {
     const r = await fetch(`${API}/api/labels`);
@@ -657,7 +654,7 @@ async function loadLabelsIntoSelect() {
   } catch {}
 }
 
-// ── Scan ──────────────────────────────────────────────────────────────────────
+// ── Scan 
 async function runScan() {
   const file = document.getElementById('scanFile').files[0];
   const labelId = document.getElementById('scanLabelSelect').value;
@@ -689,7 +686,7 @@ async function runScan() {
   }
 }
 
-// ── Render results ────────────────────────────────────────────────────────────
+// ── Render results 
 function renderResults(d) {
   document.getElementById('resultsEmpty').style.display = 'none';
   document.getElementById('resultsPanel').style.display = '';

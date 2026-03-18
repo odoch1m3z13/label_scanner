@@ -52,5 +52,12 @@ def save_heatmap(scan_id: str, heatmap: np.ndarray) -> Path:
 
 def image_url(path: Path | str) -> str:
     """Convert absolute path to a URL served by the /data static mount."""
-    rel = Path(path).relative_to(settings.base_dir)
-    return f"/{rel.as_posix()}"
+    path = Path(path)
+    # Find 'data' in the path and return everything from there
+    parts = path.parts
+    try:
+        data_idx = [p.lower() for p in parts].index('data')
+        rel = Path(*parts[data_idx:])
+        return f"/{rel.as_posix()}"
+    except ValueError:
+        return f"/data/{path.name}"
