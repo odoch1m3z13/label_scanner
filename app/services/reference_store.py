@@ -31,6 +31,7 @@ from app.utils.image import (
     resize_long_edge,
     save_image,
 )
+from app.utils.serialization import bboxes_to_dicts
 
 settings = get_settings()
 
@@ -53,6 +54,7 @@ async def register_label(
     image_bytes: bytes,
     db: AsyncSession,
     label_id: str | None = None,
+    template: list | None = None,
 ) -> ReferenceMetadata:
     """
     Full reference-registration pipeline:
@@ -74,6 +76,7 @@ async def register_label(
     h, w = img.shape[:2]
 
     # Stage 4a: OCR
+    ocr_boxes = []
     try:
         ocr_boxes = ocr_mod.run_ocr(img)
         ocr_data = ocr_mod.boxes_to_dict(ocr_boxes)
@@ -81,7 +84,50 @@ async def register_label(
         logger.warning(f"OCR failed during registration: {exc}")
         ocr_data = []
 
+    template = []
+
+    for b in ocr_boxes:
+        if b.confidence <= 0.7:
+            continue
+            
+        if b.box.w * b.box.h < 500:
+            continue
+
+        text = b.text.strip().lower()
+
+        if not text:
+            continue
+
+        # classify field
+        if any(x in text for x in ["exp", "date"]):
+            field_type = "expiry"
+            strict = True
+
+        elif any(c.isdigit() for c in text):
+            field_type = "numeric"
+            strict = True
+
+        elif "barcode" in text:
+            field_type = "barcode"
+            strict = True
+
+        else:
+            field_type = "text"
+            strict = False
+
+        template.append({
+            "name": text.replace(" ", "_"),
+            "type": field_type,
+            "x": b.box.x,
+            "y": b.box.y,
+            "w": b.box.w,
+            "h": b.box.h,
+            "expected_text": b.text,
+            "strict": strict,
+        })
+
     # Stage 4b: logo regions
+    logo_regions = []
     try:
         logo_regions = logo_mod.detect_logo_regions(img)
         logo_data = logo_mod.regions_to_dict(logo_regions)
@@ -90,11 +136,11 @@ async def register_label(
         logo_data = []
 
     # Stage 4c: colour profile
+    color_profile = []
     try:
         color_profile = color_mod.extract_color_profile(img)
     except Exception as exc:
         logger.warning(f"Colour profile failed: {exc}")
-        color_profile = []
 
     # Stage 4d: barcodes
     try:
@@ -117,9 +163,22 @@ async def register_label(
         image_path=str(img_path),
         width=w,
         height=h,
-        ocr_data=json.dumps(ocr_data),
-        logo_regions=json.dumps(logo_data),
-        color_profile=json.dumps(color_profile),
+        template_json=json.dumps(template),
+        ocr_data=json.dumps([
+            {
+                "text": b.text,
+                "confidence": b.confidence,
+                "box": {
+                    "x": b.box.x,
+                    "y": b.box.y,
+                    "w": b.box.w,   
+                    "h": b.box.h,
+                }
+            }
+            for b in ocr_data
+        ]),
+        logo_regions=json.dumps(bboxes_to_dicts(logo_regions)),
+        color_profile=json.dumps(bboxes_to_dicts(color_profile)),
         barcode_values=json.dumps(barcode_values),
     )
     db.add(row)
@@ -135,8 +194,8 @@ async def register_label(
         width=w,
         height=h,
         ocr_data=ocr_data,
-        logo_regions=logo_data,
-        color_profile=color_profile,
+        logo_regions=bboxes_to_dicts(logo_regions),
+        color_profile=bboxes_to_dicts(color_profile),
         barcode_values=barcode_values,
     )
 
@@ -154,6 +213,7 @@ async def get_label(label_id: str, db: AsyncSession) -> ReferenceMetadata | None
         image_path=d["image_path"],
         width=d["width"],
         height=d["height"],
+        template_json=d.get("template_json"),
         ocr_data=d["ocr_data"],
         logo_regions=d["logo_regions"],
         color_profile=d["color_profile"],

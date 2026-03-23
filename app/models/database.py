@@ -6,6 +6,7 @@ from __future__ import annotations
 from sqlalchemy.pool import NullPool
 
 import json
+import uuid
 from datetime import datetime
 
 from sqlalchemy import String, Text, Float, Integer, DateTime, JSON
@@ -26,7 +27,11 @@ def _engine_kwargs(url: str) -> dict:
     # on long-running requests (scans with model inference can take minutes).
     return {
         "poolclass": NullPool,
-        "connect_args": {"statement_cache_size": 0},
+        "connect_args": {
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+            "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4().hex}__",
+        },
     }
 
 engine = create_async_engine(
@@ -59,6 +64,7 @@ class ReferenceLabel(Base):
     width: Mapped[int] = mapped_column(Integer)
     height: Mapped[int] = mapped_column(Integer)
     # JSON blobs
+    template_json: Mapped[str] = mapped_column(Text, default="[]")
     ocr_data: Mapped[str] = mapped_column(Text, default="[]")
     logo_regions: Mapped[str] = mapped_column(Text, default="[]")
     color_profile: Mapped[str] = mapped_column(Text, default="{}")
@@ -71,6 +77,7 @@ class ReferenceLabel(Base):
             "image_path": self.image_path,
             "width": self.width,
             "height": self.height,
+            "template_json": self.template_json,
             "ocr_data": json.loads(self.ocr_data),
             "logo_regions": json.loads(self.logo_regions),
             "color_profile": json.loads(self.color_profile),

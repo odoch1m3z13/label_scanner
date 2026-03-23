@@ -78,6 +78,8 @@ async def scan_label(
 
     from app.utils.image import load_image
     ref_img = load_image(ref_meta.image_path)
+    import json
+    template = json.loads(ref_meta.template_json or "[]")
 
     # ── Normalise both ────────────────────────────────────────────────────────
     scan_img = normalize_image(resize_long_edge(scan_raw, max_size=1600))
@@ -116,67 +118,59 @@ async def scan_label(
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STAGE 3 / 4a: OCR text diff
+    # STAGE 3: Template text diff
     # ─────────────────────────────────────────────────────────────────────────
     try:
-        ref_ocr = ocr_mod.dict_to_boxes(ref_meta.ocr_data)
-        scan_ocr = ocr_mod.run_ocr(scan_aligned)
-        ocr_defects, ocr_ms = ocr_mod.diff_ocr(ref_ocr, scan_ocr)
-        all_defects.extend(ocr_defects)
-        stages.append(
-            StageResult(
-                stage="ocr",
-                duration_ms=ocr_ms,
-                defects=ocr_defects,
-                metadata={
-                    "ref_boxes": len(ref_ocr),
-                    "scan_boxes": len(scan_ocr),
-                },
-            )
-        )
+        from app.pipeline.template import check_template_text
+        t0 = time.perf_counter()
+        
+        defects = check_template_text(ref_img, scan_aligned, template)
+        
+        duration = (time.perf_counter() - t0) * 1000
+        
+        all_defects.extend(defects)
+        
+        stages.append(StageResult(
+            stage="template_text",
+            duration_ms=duration,
+            defects=defects,
+        ))
     except Exception as exc:
-        logger.warning(f"OCR stage error: {exc}")
-        stages.append(StageResult(stage="ocr", duration_ms=0, metadata={"error": str(exc)}))
+        logger.warning(f"Template stage error: {exc}")
+        stages.append(StageResult(stage="template_text", duration_ms=0, metadata={"error": str(exc)}))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STAGE 3b: Negative space detection
+    # ─────────────────────────────────────────────────────────────────────────
+    try:
+        from app.pipeline.template import detect_unexpected_changes
+        t0 = time.perf_counter()
+        
+        extra_defects = detect_unexpected_changes(ref_img, scan_aligned, template)
+        
+        duration = (time.perf_counter() - t0) * 1000
+        
+        all_defects.extend(extra_defects)
+        
+        stages.append(StageResult(
+            stage="unexpected_detection",
+            duration_ms=duration,
+            defects=extra_defects,
+        ))
+    except Exception as exc:
+        logger.warning(f"Unexpected detection stage error: {exc}")
+        stages.append(StageResult(stage="unexpected_detection", duration_ms=0, metadata={"error": str(exc)}))
 
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE 4b: Logo comparison
     # ─────────────────────────────────────────────────────────────────────────
-    try:
-        ref_regions = logo_mod.dict_to_regions(ref_meta.logo_regions)
-        logo_defects, logo_ms = logo_mod.compare_logos(ref_img, scan_aligned, ref_regions)
-        all_defects.extend(logo_defects)
-        stages.append(
-            StageResult(
-                stage="logo",
-                duration_ms=logo_ms,
-                defects=logo_defects,
-                metadata={"regions_checked": len(ref_regions)},
-            )
-        )
-    except Exception as exc:
-        logger.warning(f"Logo stage error: {exc}")
-        stages.append(StageResult(stage="logo", duration_ms=0, metadata={"error": str(exc)}))
-
+    # Disabled for template mode
+    # ─────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE 4c: Colour verification
     # ─────────────────────────────────────────────────────────────────────────
-    try:
-        color_defects, color_ms = color_mod.compare_colors(
-            ref_img, scan_aligned, ref_meta.color_profile
-        )
-        all_defects.extend(color_defects)
-        stages.append(
-            StageResult(
-                stage="color",
-                duration_ms=color_ms,
-                defects=color_defects,
-                metadata={"cells_checked": len(ref_meta.color_profile)},
-            )
-        )
-    except Exception as exc:
-        logger.warning(f"Color stage error: {exc}")
-        stages.append(StageResult(stage="color", duration_ms=0, metadata={"error": str(exc)}))
-
+    # Disabled for template mode
+    # ─────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE 4d: Barcode check
     # ─────────────────────────────────────────────────────────────────────────
@@ -200,22 +194,8 @@ async def scan_label(
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE 5: Anomaly detection
     # ─────────────────────────────────────────────────────────────────────────
-    try:
-        anomaly_defects, heatmap, anomaly_ms = anomaly_mod.detect_anomalies(ref_img, scan_aligned)
-        all_defects.extend(anomaly_defects)
-        stages.append(
-            StageResult(
-                stage="anomaly",
-                duration_ms=anomaly_ms,
-                defects=anomaly_defects,
-                metadata={"regions_flagged": len(anomaly_defects)},
-            )
-        )
-        image_store.save_heatmap(scan_id, heatmap)
-    except Exception as exc:
-        logger.warning(f"Anomaly stage error: {exc}")
-        stages.append(StageResult(stage="anomaly", duration_ms=0, metadata={"error": str(exc)}))
-
+    # anomaly stage disabled for template mode
+    # ─────────────────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────────────────
     # STAGE 6: Decision engine
     # ─────────────────────────────────────────────────────────────────────────

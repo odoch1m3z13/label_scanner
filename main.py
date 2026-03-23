@@ -81,7 +81,8 @@ async def _retry_db_loop():
             break
         if attempt >= 10:
             logger.error("DB connection failed after 10 attempts — giving up. Check DATABASE_URL in environment variables.")
-            break# ── App ────
+            break
+        # ── App ────
 
 app = FastAPI(
     title=settings.app_name,

@@ -114,30 +114,40 @@ def _put_label(
     cv2.putText(img, text, (x + 2, y - 2), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
 
-def annotate_image(
-    img: np.ndarray,
-    defects: list,
-    use_scan_box: bool = True,
-) -> np.ndarray:
+def annotate_image(img, defects, use_scan_box: bool):
     out = img.copy()
-    
+
     for d in defects:
-        # Skip low-confidence colour grid noise
-        if d.change_type == "color":
-            continue
-        # Only show high-confidence anomalies
-        if d.change_type == "anomaly" and d.confidence < 0.7:
-            continue
-        
         box = d.scan_box if use_scan_box else d.ref_box
+
         if box is None:
             continue
-        
-        color = RED if use_scan_box else GREEN
+
         x, y, w, h = box.to_xywh()
-        cv2.rectangle(out, (x, y), (x + w, y + h), color, 2)
-        _put_label(out, d.change_type, x, y, color)
-    
+
+        # colors
+        if use_scan_box:
+            color = (0, 0, 255)  # RED
+        else:
+            color = (0, 255, 0)  # GREEN
+
+        # draw rectangle
+        cv2.rectangle(out, (x, y), (x+w, y+h), color, 2)
+
+        # label text
+        label = d.change_type.value if hasattr(d.change_type, "value") else str(d.change_type)
+
+        cv2.putText(
+            out,
+            label,
+            (x, y - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            color,
+            1,
+            cv2.LINE_AA
+        )
+
     return out
 
 # ── Coordinate scaling ────────────────────────────────────────────────────────

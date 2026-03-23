@@ -112,6 +112,7 @@ class ReferenceMetadata(BaseModel):
     image_path: str
     width: int
     height: int
+    template_json: str | None = None
     ocr_data: list[dict[str, Any]] = []
     logo_regions: list[dict[str, Any]] = []
     color_profile: list[dict[str, Any]] = []
