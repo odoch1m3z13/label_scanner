@@ -263,7 +263,7 @@ def _split_token(pts: list, text: str, conf: float, scale: float,
     Tokenisation normalisation — split multi-word OCR tokens and distribute
     their bounding box proportionally by character count.
     """
-    parts = [p for p in text.strip().split() if _clean(p)]
+    parts = [p for p in text.strip().split() if len(_clean(p)) >= 2]
     if not parts:
         return []
 
@@ -310,14 +310,25 @@ def _ocr_results_to_words(
 ) -> list[dict]:
     words: list[dict] = []
     for (pts, text, conf) in results:
-        if conf < 0.25:
+        if conf < 0.50:
             continue
         words.extend(_split_token(pts, text, conf, scale, orig_h, orig_w))
     words.sort(key=lambda w: (w["bbox"]["y"] // 20, w["bbox"]["x"]))
     return words
 
 
-# ── Diff: fuzzy LCS + spatial second-pass ────────────────────────────────────
+# ── Diff: spatial proximity matching ─────────────────────────────────────────
+#
+# Each reference word is matched to the nearest scan word (by normalised
+# canvas distance) that clears a text-similarity threshold.
+# This is far more robust than global LCS because:
+#  - OCR tokenisation differences between the two images don't cascade.
+#  - Cross-region pairings are impossible — a word in the nutrition panel
+#    can never be matched against a word in the directions column.
+
+_SIM_THRESHOLD  = 0.82   # minimum Levenshtein similarity to count as a match
+_SPATIAL_RADIUS = 0.12   # max normalised Euclidean distance  (0–1 scale)
+
 
 def _levenshtein(a: str, b: str) -> int:
     if a == b:  return 0
@@ -339,85 +350,66 @@ def _similarity(a: str, b: str) -> float:
     return 1.0 - _levenshtein(ca, cb) / max(len(ca), len(cb))
 
 
-_FUZZY_MATCH_THRESHOLD = 0.75
+def _center(word: dict, img_w: int, img_h: int) -> tuple[float, float]:
+    b = word["bbox"]
+    return (b["x"] + b["w"] / 2) / img_w, (b["y"] + b["h"] / 2) / img_h
 
 
-def _fuzzy_lcs_diff(wa: list[dict], wb: list[dict]) -> list[dict]:
-    m, n = len(wa), len(wb)
-    sim  = [[_similarity(wa[i]["text"], wb[j]["text"]) for j in range(n)]
-            for i in range(m)]
-    dp   = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if sim[i-1][j-1] >= _FUZZY_MATCH_THRESHOLD:
-                dp[i][j] = dp[i-1][j-1] + 1
+def _smart_diff(
+    wa: list[dict], wb: list[dict],
+    ref_h: int, ref_w: int,
+    user_h: int, user_w: int,
+) -> list[dict]:
+    """
+    Spatial proximity matching diff.
+
+    For every reference word find the nearest unmatched scan word within
+    _SPATIAL_RADIUS (normalised canvas units).  If similarity >= _SIM_THRESHOLD
+    they are paired as match/modified; everything else is removed/added.
+    """
+    # Pre-compute centres for all scan words
+    wb_centres = [_center(w, user_w, user_h) for w in wb]
+
+    matched_b: set[int] = set()
+    ref_matches: dict[int, int] = {}   # ref_idx -> scan_idx
+
+    # Pass 1 — greedy nearest-neighbour (priority: closest first)
+    candidates = []
+    for i, wa_word in enumerate(wa):
+        cx_a, cy_a = _center(wa_word, ref_w, ref_h)
+        for j, (cx_b, cy_b) in enumerate(wb_centres):
+            dist = ((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2) ** 0.5
+            if dist <= _SPATIAL_RADIUS:
+                sim = _similarity(wa_word["text"], wb[j]["text"])
+                if sim >= _SIM_THRESHOLD:
+                    candidates.append((dist, i, j, sim))
+
+    # Sort by dist so we greedily assign closest pairs first
+    candidates.sort(key=lambda t: t[0])
+    for dist, i, j, sim in candidates:
+        if i not in ref_matches and j not in matched_b:
+            ref_matches[i] = j
+            matched_b.add(j)
+
+    # Build output
+    out: list[dict] = []
+    for i, wa_word in enumerate(wa):
+        if i in ref_matches:
+            j   = ref_matches[i]
+            sim = _similarity(wa_word["text"], wb[j]["text"])
+            if sim >= 1.0:
+                out.append({"type": "match",    "ref": wa_word, "user": wb[j]})
             else:
-                dp[i][j] = max(dp[i-1][j], dp[i][j-1])
-
-    i, j, out = m, n, []
-    while i > 0 or j > 0:
-        if (i > 0 and j > 0
-                and sim[i-1][j-1] >= _FUZZY_MATCH_THRESHOLD
-                and dp[i][j] == dp[i-1][j-1] + 1):
-            s = sim[i-1][j-1]
-            out.append(
-                {"type": "match",    "ref": wa[i-1], "user": wb[j-1]}
-                if s >= 1.0 else
-                {"type": "modified", "ref": wa[i-1], "user": wb[j-1],
-                 "similarity": round(s, 3)}
-            )
-            i -= 1; j -= 1
-        elif j > 0 and (i == 0 or dp[i][j-1] >= dp[i-1][j]):
-            out.append({"type": "added",   "word": wb[j-1]}); j -= 1
+                out.append({"type": "modified", "ref": wa_word, "user": wb[j],
+                             "similarity": round(sim, 3)})
         else:
-            out.append({"type": "removed", "word": wa[i-1]}); i -= 1
-    return list(reversed(out))
+            out.append({"type": "removed", "word": wa_word})
 
+    for j, wb_word in enumerate(wb):
+        if j not in matched_b:
+            out.append({"type": "added", "word": wb_word})
 
-def _spatial_second_pass(diff: list[dict], ref_h: int, user_h: int) -> list[dict]:
-    SPATIAL_TOL = 0.08
-
-    def y_norm(word: dict, img_h: int) -> float:
-        b = word["bbox"]
-        return (b["y"] + b["h"] / 2) / img_h
-
-    removed_idx = [i for i, d in enumerate(diff) if d["type"] == "removed"]
-    added_idx   = [i for i, d in enumerate(diff) if d["type"] == "added"]
-    used_added: set[int] = set()
-    promotions: dict[int, dict | None] = {}
-
-    for ri in removed_idx:
-        rw = diff[ri]["word"]
-        ry = y_norm(rw, ref_h)
-        best_dist, best_ai = float("inf"), None
-        for ai in added_idx:
-            if ai in used_added:
-                continue
-            dist = abs(ry - y_norm(diff[ai]["word"], user_h))
-            if dist < SPATIAL_TOL and dist < best_dist:
-                best_dist, best_ai = dist, ai
-        if best_ai is not None:
-            s = _similarity(rw["text"], diff[best_ai]["word"]["text"])
-            promotions[ri]      = {"type": "modified", "ref": rw,
-                                    "user": diff[best_ai]["word"],
-                                    "similarity": round(s, 3)}
-            promotions[best_ai] = None
-            used_added.add(best_ai)
-
-    if not promotions:
-        return diff
-    result = []
-    for i, d in enumerate(diff):
-        if i not in promotions:
-            result.append(d)
-        elif promotions[i] is not None:
-            result.append(promotions[i])
-    return result
-
-
-def _smart_diff(wa: list[dict], wb: list[dict],
-                ref_h: int, user_h: int) -> list[dict]:
-    return _spatial_second_pass(_fuzzy_lcs_diff(wa, wb), ref_h, user_h)
+    return out
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -465,7 +457,7 @@ async def compare(
     user_words = _ocr_results_to_words(user_results, user_scale, user_h, user_w)
     log.info("ref: %d words  user: %d words", len(ref_words), len(user_words))
 
-    diff     = _smart_diff(ref_words, user_words, ref_h, user_h)
+    diff     = _smart_diff(ref_words, user_words, ref_h, ref_w, user_h, user_w)
     removed  = sum(1 for d in diff if d["type"] == "removed")
     added    = sum(1 for d in diff if d["type"] == "added")
     modified = sum(1 for d in diff if d["type"] == "modified")
